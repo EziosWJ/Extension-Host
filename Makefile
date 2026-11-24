@@ -15,12 +15,13 @@ vet: ## 运行 go vet
 check: vet test build ## 格式检查、测试与构建
 	@test -z "$$(gofmt -l .)" || (echo "gofmt needed:"; gofmt -l .; exit 1)
 
-examples: build ## 打包四个示例插件
+examples: build ## 打包示例插件
 	mkdir -p $(DIST)
 	$(BIN) pack ./examples/hello -o $(DIST)/com.godesk.hello-0.1.0.zip
 	$(BIN) pack ./examples/web-only -o $(DIST)/com.godesk.webonly-0.1.0.zip
 	$(BIN) pack ./examples/lua-only -o $(DIST)/com.godesk.luaonly-0.1.0.zip
 	$(BIN) pack ./examples/services -o $(DIST)/com.godesk.services-0.1.0.zip
+	$(BIN) pack ./examples/postgres-backup/plugin -o $(DIST)/com.godesk.postgres-backup-0.3.0.zip
 
 run: build ## 运行 Hello 示例
 	$(BIN) run ./examples/hello --data-dir ./godesk-ext-data

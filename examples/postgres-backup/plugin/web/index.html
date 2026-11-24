@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PostgreSQL 备份</title>
+  <link rel="stylesheet" href="./style.css">
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <main>
+    <header class="target">
+      <div>
+        <h1>PostgreSQL 备份</h1>
+        <p id="target">正在读取备份目标…</p>
+      </div>
+      <button id="submit" type="button" disabled>立即备份</button>
+    </header>
+
+    <details id="connection">
+      <summary>数据库连接</summary>
+      <form id="connection-form">
+        <fieldset disabled>
+          <div class="connection-fields">
+            <label>主机<input name="host" required placeholder="127.0.0.1"></label>
+            <label>端口<input name="port" type="number" min="1" max="65535" required></label>
+            <label>数据库<input name="database" required></label>
+            <label>用户<input name="username" required></label>
+            <label class="password">密码<input name="password" type="password" autocomplete="new-password"></label>
+          </div>
+          <label id="clear-password" hidden>
+            <input name="clearPassword" type="checkbox"> 清除已保存的密码
+          </label>
+          <button type="submit">保存连接</button>
+        </fieldset>
+        <p id="connection-notice" role="status"></p>
+      </form>
+    </details>
+
+    <section aria-labelledby="history-title">
+      <h2 id="history-title">备份历史</h2>
+      <p id="notice" role="status"></p>
+      <ol id="jobs" aria-label="备份任务"></ol>
+    </section>
+  </main>
+
+  <template id="job">
+    <li class="job">
+      <time></time>
+      <span class="status"></span>
+      <p class="detail"></p>
+    </li>
+  </template>
+</body>
+</html>

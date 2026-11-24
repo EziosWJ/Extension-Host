@@ -2,7 +2,7 @@
 
 GoDesk 的插件宿主。仓库提供公共 Go 模块、独立命令 `godesk-ext`、最小管理界面和示例插件。
 
-当前完成实施 Spec 的工单 01（独立运行闭环）、工单 02（GoDesk 嵌入），以及工单 03 的宿主侧共享 systemd 能力与 `host.services` 授权；GoDesk 原生服务管理的接入随 v0.2.0 发布。Mihomo 插件和完整开发命令属于工单 04–05，尚未实现。
+当前完成实施 Spec 的工单 01（独立运行闭环）、工单 02（GoDesk 嵌入），以及工单 03 的宿主侧共享 systemd 能力与 `host.services` 授权；GoDesk 原生服务管理的接入随 v0.2.0 发布。Mihomo 插件和完整开发命令由工单 04–05 跟踪。另提供 [PostgreSQL 备份示例](examples/postgres-backup/README.md)，用于验收 Lua 命令执行和同一 ZIP 的双模式行为。
 
 - 共享契约：[GoDesk 插件首版契约](https://github.com/EziosWJ/GoDesk/blob/main/docs/extensions.md)
 - 实施顺序：[Extension Host 实施 Spec](https://github.com/EziosWJ/GoDesk/blob/main/.scratch/extension-host/spec.md)
@@ -140,6 +140,18 @@ host.app.emit("visit", { count = 3 })
 
 响应表字段：`status`（默认 200）、`headers`（字符串或字符串数组）、`body`（字符串）。
 
+### `host.process`
+
+```lua
+local pid, err = host.process.start("pg_dump", {"--format=custom", "--file", host.dataDir .. "/backup.dump"}, function(result)
+  print(result.exitCode, result.stderr)
+end)
+```
+
+- `start(program, args, onExit[, env])` 按独立参数启动命令，继承宿主账号和环境，立即返回子进程 PID。可选的 `env` 表用字符串设置环境变量，用 `false` 移除继承的变量。修改仅对这个子进程生效。启动失败时返回 `nil, error`。
+- 完成回调和 HTTP 处理器在同一个 Lua 实例中串行运行。结果包含 `pid`、`exitCode`、`stderr`，等待出错时还包含 `error`。标准输出默认丢弃，标准错误最多保留开头 64 KiB，截断时提供 `stderrTruncated`。
+- 停止插件会终止其子进程。退出后由插件在下次启动时恢复自己的业务状态。
+
 ### `host.storage`
 
 ```lua
@@ -180,7 +192,7 @@ local text = host.json.encode(payload)
 
 ### 标准库和 `require`
 
-保留基础函数、`string`、`table`、`math`、`coroutine`、`io`、`os` 的文件与时间操作。`os.exit`、`os.setenv`、`os.execute`、`io.popen`、`package.loadlib` 已移除。`print` 写入插件日志。
+两种宿主默认提供 GopherLua 的 `os` 和 `io`，文件访问和子进程使用宿主运行账号。`os.execute` 同步等待命令完成，插件在等待期间暂停处理其余 Lua 请求。`io.popen` 提供进程管道，`os.setenv` 修改宿主进程环境。`os.exit([code])` 停止当前插件实例，保留启用设置，并记录退出码。已注册的停止钩子随实例清理执行。`print` 写入插件日志。
 
 `require("name")` 先查找入口脚本所在目录，再查找包根目录：
 

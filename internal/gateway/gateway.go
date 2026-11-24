@@ -262,6 +262,10 @@ func (g *Gateway) api(w http.ResponseWriter, r *http.Request) {
 		Body:       body,
 		RemoteAddr: r.RemoteAddr,
 	})
+	if errors.Is(err, lua.ErrStopped) {
+		g.fail(w, err)
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "plugin handler failed: "+err.Error())
 		return

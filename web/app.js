@@ -85,7 +85,7 @@ function actionPath(id, action, query = "") {
 async function runAction(plugin, action, successMessage, query = "") {
   try {
     if (action === "uninstall") {
-      await api(actionPath(plugin.id, action, query), { method: "DELETE" });
+      await api(`/api/v1/extensions/${encodeURIComponent(plugin.id)}${query}`, { method: "DELETE" });
     } else {
       await api(actionPath(plugin.id, action), { method: "POST" });
     }

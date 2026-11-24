@@ -29,7 +29,16 @@ func (r *Runtime) setup(L *glua.LState) error {
 	glua.OpenString(L)
 	glua.OpenMath(L)
 
-	r.restrictLibraries(L)
+	L.SetField(L.GetGlobal("os"), "exit", L.NewFunction(func(L *glua.LState) int {
+		code := L.OptInt(1, 0)
+		r.exitRequested = true
+		r.opts.Logger.Info("Lua requested plugin exit", "code", code)
+		r.cancelExecution()
+		L.RaiseError("plugin requested exit")
+		return 0
+	}))
+	removeField(L, "package", "loadlib")
+	removeField(L, "package", "loaders")
 	r.installPrint(L)
 	r.installRequire(L)
 
@@ -38,6 +47,7 @@ func (r *Runtime) setup(L *glua.LState) error {
 	host.RawSetString("apiVersion", glua.LNumber(1))
 	host.RawSetString("app", r.appModule(L))
 	host.RawSetString("storage", r.storageModule(L))
+	host.RawSetString("process", r.processModule(L))
 	host.RawSetString("config", r.configModule(L))
 	host.RawSetString("json", r.jsonModule(L))
 	host.RawSetString("http", unavailableModule(L, "host.http", "request"))
@@ -422,15 +432,6 @@ func (r *Runtime) installPrint(L *glua.LState) {
 		r.opts.Logger.Info(strings.Join(parts, "\t"))
 		return 0
 	}))
-}
-
-func (r *Runtime) restrictLibraries(L *glua.LState) {
-	for _, name := range []string{"exit", "setenv", "execute"} {
-		removeField(L, "os", name)
-	}
-	removeField(L, "io", "popen")
-	removeField(L, "package", "loadlib")
-	removeField(L, "package", "loaders")
 }
 
 func removeField(L *glua.LState, module, field string) {

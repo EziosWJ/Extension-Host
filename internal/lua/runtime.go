@@ -21,6 +21,9 @@ import (
 // ErrStopped is returned when the runtime is no longer running.
 var ErrStopped = errors.New("plugin instance is stopped")
 
+// ErrExited is returned when the plugin calls os.exit during startup.
+var ErrExited = errors.New("plugin exited during startup")
+
 // Request is the request passed to a Lua HTTP handler.
 type Request struct {
 	Method     string
@@ -75,6 +78,9 @@ type Runtime struct {
 	ready    chan error
 	done     chan struct{}
 
+	processExits chan processExit
+	processes    sync.WaitGroup
+
 	startMu sync.Mutex
 	started bool
 	stop    sync.Once
@@ -84,6 +90,9 @@ type Runtime struct {
 	hooks        map[string]*glua.LFunction
 	modules      map[string]glua.LValue
 	loading      map[string]bool
+
+	exitRequested   bool
+	cancelExecution context.CancelFunc
 }
 
 type commandKind int
@@ -118,6 +127,7 @@ func New(opts Options) *Runtime {
 		cmds:         make(chan command),
 		ready:        make(chan error, 1),
 		done:         make(chan struct{}),
+		processExits: make(chan processExit),
 		routes:       make(map[string]*glua.LFunction),
 		routeMethods: make(map[string]map[string]bool),
 		hooks:        make(map[string]*glua.LFunction),
@@ -205,42 +215,87 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	return stopErr
 }
 
+// Done is closed after the Lua state has been released.
+func (r *Runtime) Done() <-chan struct{} { return r.done }
+
 func (r *Runtime) loop() {
 	defer close(r.done)
+	defer func() {
+		r.cancel()
+		r.processes.Wait()
+	}()
 	L := glua.NewState(glua.Options{SkipOpenLibs: true})
 	defer L.Close()
-	L.SetContext(r.ctx)
+	execution, cancel := context.WithCancel(r.ctx)
+	defer cancel()
+	r.cancelExecution = cancel
+	L.SetContext(execution)
 
 	if err := r.setup(L); err != nil {
 		r.ready <- err
 		return
 	}
-	if err := r.loadEntry(L); err != nil {
-		r.ready <- err
+	err := r.loadEntry(L)
+	if err == nil {
+		if hookErr := r.callHook(L, "start"); hookErr != nil {
+			err = fmt.Errorf("start hook: %w", hookErr)
+		}
+	}
+	if r.exitRequested {
+		r.stopAfterExit(L)
+		r.ready <- ErrExited
 		return
 	}
-	if err := r.callHook(L, "start"); err != nil {
-		r.ready <- fmt.Errorf("start hook: %w", err)
+	r.ready <- err
+	if err != nil {
 		return
 	}
-	r.ready <- nil
 
 	for {
 		select {
 		case <-r.ctx.Done():
 			return
+		case exit := <-r.processExits:
+			r.reportProcessExit(L, exit)
+			if r.exitRequested {
+				r.stopAfterExit(L)
+				return
+			}
 		case cmd := <-r.cmds:
 			switch cmd.kind {
 			case commandHandle:
 				response, err := r.handle(L, cmd.req)
+				if r.exitRequested {
+					cmd.done <- result{err: ErrStopped}
+					r.stopAfterExit(L)
+					return
+				}
 				cmd.done <- result{response: response, err: err}
 			case commandStop:
-				err := r.callHook(L, "stop")
-				cmd.done <- result{err: err}
+				cmd.done <- result{err: r.stopHook(L)}
 				return
 			}
 		}
 	}
+}
+
+func (r *Runtime) stopAfterExit(L *glua.LState) {
+	execution, cancel := context.WithCancel(r.ctx)
+	defer cancel()
+	r.cancelExecution = cancel
+	L.SetContext(execution)
+	r.exitRequested = false
+	if err := r.stopHook(L); err != nil {
+		r.opts.Logger.Error("stop hook after plugin exit", "error", err)
+	}
+}
+
+func (r *Runtime) stopHook(L *glua.LState) error {
+	err := r.callHook(L, "stop")
+	if r.exitRequested {
+		return nil
+	}
+	return err
 }
 
 func (r *Runtime) loadEntry(L *glua.LState) error {

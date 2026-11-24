@@ -562,6 +562,11 @@ func (m *Manager) startLocked(ctx context.Context, state *state) error {
 	})
 	if err := instance.Start(ctx); err != nil {
 		m.mu.Lock()
+		if errors.Is(err, lua.ErrExited) {
+			state.status = StatusStopped
+			m.mu.Unlock()
+			return nil
+		}
 		state.status = StatusFailed
 		state.lastError = err.Error()
 		m.mu.Unlock()
@@ -580,7 +585,24 @@ func (m *Manager) startLocked(ctx context.Context, state *state) error {
 	state.startedAt = time.Now().UTC()
 	m.mu.Unlock()
 	m.logger.Info("plugin started", "plugin", record.ID, "version", record.Version)
+	if instance.runtime != nil {
+		go m.watchRuntime(record.ID, state, instance)
+	}
 	return nil
+}
+
+func (m *Manager) watchRuntime(id string, state *state, instance *Instance) {
+	<-instance.runtime.Done()
+	lock := m.lockFor(id)
+	lock.Lock()
+	defer lock.Unlock()
+
+	m.mu.Lock()
+	current := state.instance == instance
+	m.mu.Unlock()
+	if current {
+		_ = m.stopLocked(context.Background(), state)
+	}
 }
 
 func (m *Manager) stopLocked(ctx context.Context, state *state) error {

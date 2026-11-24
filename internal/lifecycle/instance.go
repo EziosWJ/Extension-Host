@@ -116,7 +116,9 @@ func (i *Instance) Start(ctx context.Context) error {
 		Services:    i.services,
 	})
 	if err := i.runtime.Start(ctx); err != nil {
-		i.logger.Error("start plugin runtime", "error", err)
+		if !errors.Is(err, lua.ErrExited) {
+			i.logger.Error("start plugin runtime", "error", err)
+		}
 		_ = business.Close()
 		i.business = nil
 		i.runtime = nil
@@ -174,7 +176,7 @@ func (i *Instance) Handle(ctx context.Context, request lua.Request) (lua.Respons
 		return lua.Response{}, ErrNoLua
 	}
 	response, err := i.runtime.Handle(ctx, request)
-	if err != nil {
+	if err != nil && !errors.Is(err, lua.ErrStopped) {
 		i.logger.Error("plugin request failed", "method", request.Method, "path", request.Path, "error", err)
 	}
 	return response, err

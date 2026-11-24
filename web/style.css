@@ -1,253 +1,242 @@
 :root {
-  color-scheme: light dark;
-  --bg: #f4f2ed;
-  --surface: #fffdf8;
-  --surface-2: #eeebe3;
-  --ink: #22201c;
-  --muted: #6d675d;
-  --line: #ded8cc;
-  --accent: #2f6f4f;
-  --accent-ink: #f4fff8;
-  --warn: #8a5a12;
-  --error: #a33a2b;
-  --ok: #2f6f4f;
+  color-scheme: light;
+  --react-web-desktop-surface: #FFFFFF;
+  --react-web-desktop-subtle: #F7F6F8;
+  --react-web-desktop-raised: #FFFFFF;
+  --react-web-desktop-fg: #242326;
+  --react-web-desktop-muted: #5D5963;
+  --react-web-desktop-divider: #DDDADF;
+  --react-web-desktop-border: #807A85;
+  --react-web-desktop-hover: #E9E7EB;
+  --react-web-desktop-pressed: #DEDCE1;
+  --react-web-desktop-accent: #6246B5;
+  --react-web-desktop-accent-hover: #543A9F;
+  --react-web-desktop-accent-pressed: #483285;
+  --react-web-desktop-on-accent: #FFFFFF;
+  --react-web-desktop-focus: #6246B5;
+  --react-web-desktop-success: #186344;
+  --react-web-desktop-warning: #784800;
+  --react-web-desktop-danger: #A3293D;
+  --react-web-desktop-on-danger: #FFFFFF;
+  --react-web-desktop-scrim: rgb(24 24 27 / 42%);
+  --react-web-desktop-shadow-overlay: 0 6px 18px rgb(24 24 27 / 16%);
+  --react-web-desktop-font-ui: "Figtree Variable", "Noto Sans SC Variable", "Microsoft YaHei UI", "PingFang SC", "Segoe UI", sans-serif;
+  --react-web-desktop-font-mono-fallback: "Cascadia Code", "Consolas", "SFMono-Regular", monospace;
+  --react-web-desktop-font-mono: "JetBrains Mono Variable", var(--react-web-desktop-font-mono-fallback);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #191b18;
-    --surface: #222520;
-    --surface-2: #2a2e27;
-    --ink: #eeeae1;
-    --muted: #a8a294;
-    --line: #3a3e36;
-    --accent: #7fc59a;
-    --accent-ink: #102016;
-    --warn: #d5a353;
-    --error: #e08a78;
-    --ok: #7fc59a;
+    color-scheme: dark;
+    --react-web-desktop-surface: #202023;
+    --react-web-desktop-subtle: #262629;
+    --react-web-desktop-raised: #2B2A2E;
+    --react-web-desktop-fg: #F3F2F5;
+    --react-web-desktop-muted: #BDB8C3;
+    --react-web-desktop-divider: #3D3A41;
+    --react-web-desktop-border: #827D8A;
+    --react-web-desktop-hover: #343238;
+    --react-web-desktop-pressed: #403D45;
+    --react-web-desktop-accent: #BBA7FA;
+    --react-web-desktop-accent-hover: #CDBEFF;
+    --react-web-desktop-accent-pressed: #AA92EF;
+    --react-web-desktop-on-accent: #211A30;
+    --react-web-desktop-focus: #BBA7FA;
+    --react-web-desktop-success: #88D6AF;
+    --react-web-desktop-warning: #F6CC86;
+    --react-web-desktop-danger: #FF9BAA;
+    --react-web-desktop-on-danger: #18181B;
+    --react-web-desktop-scrim: rgb(0 0 0 / 56%);
+    --react-web-desktop-shadow-overlay: 0 6px 18px rgb(0 0 0 / 45%);
   }
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 body {
   margin: 0;
-  min-height: 100vh;
-  background: var(--bg);
-  color: var(--ink);
-  font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-}
-
-main {
-  width: min(1040px, calc(100% - 32px));
-  margin: 0 auto;
-  padding: 42px 0 72px;
-}
-
-.page-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
-  margin-bottom: 24px;
-}
-
-.eyebrow {
-  margin: 0 0 6px;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-h1 { margin: 0 0 10px; font-size: clamp(30px, 5vw, 44px); letter-spacing: -0.025em; }
-h2 { margin: 0; font-size: 18px; }
-.lede { margin: 0; max-width: 66ch; color: var(--muted); }
-.muted { color: var(--muted); font-size: 13px; }
-
-.card {
-  padding: 20px 22px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--surface);
-}
-
-.install-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  flex-wrap: wrap;
-  margin-bottom: 30px;
-}
-
-.install-form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-input[type="file"] { max-width: 260px; color: var(--muted); font: inherit; }
-
-.section-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-
-.plugins { display: flex; flex-direction: column; gap: 16px; }
-
-.plugin {
-  padding: 20px 22px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--surface);
-}
-
-.plugin-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.plugin-title { margin: 0; font-size: 19px; }
-.plugin-id { margin: 2px 0 0; color: var(--muted); font: 12px/1.4 ui-monospace, monospace; overflow-wrap: anywhere; }
-.badges { display: flex; gap: 6px; flex-wrap: wrap; }
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 9px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-}
-.badge.on { color: var(--accent); border-color: var(--accent); }
-.badge.off { color: var(--muted); }
-.badge.running { color: var(--ok); border-color: var(--ok); }
-.badge.failed { color: var(--error); border-color: var(--error); }
-.badge.pending { color: var(--warn); border-color: var(--warn); }
-
-.error-box {
-  margin: 14px 0 0;
-  padding: 10px 12px;
-  border-left: 3px solid var(--error);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--error) 9%, transparent);
-  color: var(--error);
-  font-size: 13px;
-  white-space: pre-wrap;
+  background: var(--react-web-desktop-surface);
+  color: var(--react-web-desktop-fg);
+  font: 0.875rem/1.25rem var(--react-web-desktop-font-ui);
   overflow-wrap: anywhere;
 }
 
-.paths {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  margin: 14px 0 0;
-  font-size: 12px;
-  color: var(--muted);
+h1, h2, h3, h4, p, dl, dd { margin: 0; }
+h1, dialog h2 { font-size: 1.25rem; line-height: 1.75rem; font-weight: 650; }
+h2 { font-size: 1rem; line-height: 1.5rem; font-weight: 650; }
+h3, h4 { font: inherit; font-weight: 650; }
+
+.toolbar {
+  background: var(--react-web-desktop-subtle);
+  border-bottom: 1px solid var(--react-web-desktop-divider);
 }
-.paths code { color: var(--ink); }
 
-.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.toolbar-content, main {
+  max-width: 64rem;
+  margin-inline: auto;
+  padding: 12px 16px;
+}
 
-button {
-  padding: 8px 14px;
-  border: 1px solid var(--accent);
-  border-radius: 9px;
-  background: var(--accent);
-  color: var(--accent-ink);
+.toolbar-content, .section-head, .plugin-head, .identity, .actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.toolbar-content, .section-head, .plugin-head { justify-content: space-between; }
+.toolbar-content { min-height: 44px; }
+main { container-type: inline-size; }
+.install { margin-bottom: 20px; }
+#install-form { display: grid; gap: 4px; margin-top: 8px; }
+.install-controls { display: grid; gap: 8px; justify-items: start; }
+input[type="file"] { width: 100%; min-width: 0; }
+input[type="file"]::file-selector-button { margin-inline-end: 8px; }
+.section-head { margin: 12px 0 8px; }
+
+button, .button, input[type="file"]::file-selector-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  min-width: 36px;
+  padding: 4px 12px;
+  border: 1px solid var(--react-web-desktop-border);
+  border-radius: 6px;
+  background: var(--react-web-desktop-surface);
+  color: var(--react-web-desktop-fg);
   font: inherit;
-  font-weight: 650;
+  font-weight: 500;
+  text-decoration: none;
   cursor: pointer;
 }
-button:hover { filter: brightness(1.06); }
-button:disabled { opacity: 0.55; cursor: progress; }
-button.ghost { background: transparent; color: var(--accent); }
-button.danger { background: transparent; color: var(--error); border-color: var(--error); }
-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-.detail-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: 12px;
-  margin-top: 18px;
+:is(button, .button):not([aria-disabled="true"]):hover, input[type="file"]::file-selector-button:hover {
+  background: var(--react-web-desktop-hover);
+}
+:is(button, .button):not([aria-disabled="true"]):active, input[type="file"]::file-selector-button:active {
+  background: var(--react-web-desktop-pressed);
+}
+:is(button, .button).primary {
+  background: var(--react-web-desktop-accent);
+  border-color: var(--react-web-desktop-accent);
+  color: var(--react-web-desktop-on-accent);
+}
+:is(button, .button).primary:not([aria-disabled="true"]):hover { background: var(--react-web-desktop-accent-hover); }
+:is(button, .button).primary:not([aria-disabled="true"]):active { background: var(--react-web-desktop-accent-pressed); }
+button.danger {
+  background: var(--react-web-desktop-danger);
+  border-color: var(--react-web-desktop-danger);
+  color: var(--react-web-desktop-on-danger);
+}
+button.danger:not([aria-disabled="true"]):hover { background: var(--react-web-desktop-danger); text-decoration: underline; }
+[aria-disabled="true"] { opacity: 0.65; cursor: default; }
+
+:focus-visible {
+  outline: 2px solid var(--react-web-desktop-focus);
+  outline-offset: 2px;
 }
 
-fieldset {
-  margin: 18px 0 0;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-}
-legend { padding: 0 6px; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: 0.04em; }
-
-.field { display: flex; flex-direction: column; gap: 4px; }
-.field label { font-size: 12px; color: var(--muted); }
-.field label .required { color: var(--error); }
-.field input[type="text"], .field input[type="password"], .field input[type="number"] {
+input { min-width: 0; color: inherit; font: inherit; accent-color: var(--react-web-desktop-accent); }
+.field input {
   width: 100%;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
+  min-height: 36px;
+  padding: 4px 8px;
+  border: 1px solid var(--react-web-desktop-border);
+  border-radius: 6px;
+  background: var(--react-web-desktop-surface);
+}
+.field { display: grid; align-content: start; gap: 4px; }
+.check { display: flex; align-items: center; gap: 8px; min-height: 36px; cursor: pointer; }
+.check input { flex: none; margin: 0; width: 16px; height: 16px; }
+
+.plugins { display: grid; gap: 8px; }
+.plugin {
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--react-web-desktop-divider);
   border-radius: 8px;
-  background: var(--bg);
-  color: var(--ink);
-  font: inherit;
+  background: var(--react-web-desktop-raised);
 }
-.field .check { display: flex; align-items: center; gap: 8px; min-height: 38px; }
+.identity { min-width: 0; }
+.caption, .badge, .metadata, .field, #install-form > label {
+  color: var(--react-web-desktop-muted);
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+.badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--react-web-desktop-subtle);
+}
+.badge[data-state="running"] {
+  color: var(--react-web-desktop-success);
+  background: color-mix(in srgb, var(--react-web-desktop-success) 12%, transparent);
+}
+.badge[data-state="failed"] {
+  color: var(--react-web-desktop-danger);
+  background: color-mix(in srgb, var(--react-web-desktop-danger) 12%, transparent);
+}
+.badge:is([data-state="starting"], [data-state="stopping"]) { color: var(--react-web-desktop-warning); }
+.mono { font-family: var(--react-web-desktop-font-mono); }
 
-.config-actions { margin-top: 12px; display: flex; gap: 8px; align-items: center; }
+.plugin details { margin-top: 4px; }
+summary {
+  min-height: 32px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+summary:hover { background: var(--react-web-desktop-hover); }
+summary:active { background: var(--react-web-desktop-pressed); }
+.details-body {
+  display: grid;
+  gap: 12px;
+  padding: 12px 0 4px;
+  border-top: 1px solid var(--react-web-desktop-divider);
+}
+.metadata, .field-grid { display: grid; gap: 4px 12px; }
+.metadata dd { color: var(--react-web-desktop-fg); }
+.metadata dd + dt { margin-top: 4px; }
+.config { display: grid; justify-items: start; gap: 8px; }
+.field-grid { width: 100%; gap: 8px 12px; }
 
-.log-path { margin-top: 14px; font: 12px/1.5 ui-monospace, monospace; color: var(--muted); overflow-wrap: anywhere; }
+.feedback { margin-block: 8px; color: var(--react-web-desktop-muted); white-space: pre-wrap; }
+.feedback:empty { display: none; }
+.error, button.danger-text { color: var(--react-web-desktop-danger); }
+.success { color: var(--react-web-desktop-success); }
+.warning { color: var(--react-web-desktop-warning); }
 
-.empty-state {
-  padding: 40px 20px;
-  border: 1px dashed var(--line);
-  border-radius: 14px;
-  text-align: center;
-  color: var(--muted);
+dialog {
+  width: min(28rem, calc(100% - 24px));
+  max-height: calc(100% - 24px);
+  padding: 16px;
+  border: 1px solid var(--react-web-desktop-border);
+  border-radius: 8px;
+  background: var(--react-web-desktop-raised);
+  color: var(--react-web-desktop-fg);
+  box-shadow: var(--react-web-desktop-shadow-overlay);
+}
+dialog::backdrop { background: var(--react-web-desktop-scrim); }
+dialog form { display: grid; gap: 8px; }
+.dialog-actions { justify-content: flex-end; margin-top: 4px; }
+
+@container (min-width: 600px) {
+  .install-controls { grid-template-columns: minmax(0, 19rem) auto; justify-content: start; }
+  .metadata { grid-template-columns: max-content minmax(0, 1fr); }
+  .metadata dd + dt { margin-top: 0; }
+  .field-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-.notice {
-  margin-bottom: 20px;
-  padding: 11px 14px;
-  border-radius: 10px;
-  font-size: 14px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.notice.error { background: color-mix(in srgb, var(--error) 12%, transparent); color: var(--error); }
-.notice.ok { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
-
-footer {
-  margin-top: 42px;
-  padding-top: 18px;
-  border-top: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 12px;
-}
-footer p { margin: 0; }
-
-@media (max-width: 640px) {
-  main { padding-top: 28px; }
-  .page-head { flex-direction: column; }
-  .install-card { align-items: stretch; }
-  .install-form { flex-direction: column; align-items: stretch; }
-  input[type="file"] { max-width: none; }
+@media (any-pointer: coarse) {
+  button, .button, input[type="file"]::file-selector-button,
+  .field input, summary, .check { min-height: 44px; min-width: 44px; }
+  summary { padding-block: 12px; }
 }
 
-.button-link {
-  display: inline-flex;
-  align-items: center;
-  padding: 8px 14px;
-  border: 1px solid var(--accent);
-  border-radius: 9px;
-  color: var(--accent);
-  font-weight: 650;
-  text-decoration: none;
+@media (forced-colors: active) {
+  :focus-visible { outline-color: Highlight; }
+  .badge { border: 1px solid CanvasText; }
 }
-.button-link:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
-.button-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

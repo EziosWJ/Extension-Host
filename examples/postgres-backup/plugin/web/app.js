@@ -1,25 +1,33 @@
 const apiRoot = new URL("../api/", location.href);
-const connection = document.getElementById("connection");
-const form = document.getElementById("connection-form");
-const formFields = form.querySelector("fieldset");
-const connectionNotice = document.getElementById("connection-notice");
+const connection = document.querySelector("#connection");
+const form = document.querySelector("#connection-form");
+const fields = form.querySelector("fieldset");
+const save = document.querySelector("#save-connection");
+const retry = document.querySelector("#retry-connection");
+const connectionNotice = document.querySelector("#connection-notice");
 const clearPassword = form.elements.namedItem("clearPassword");
 const password = form.elements.namedItem("password");
 const connectionFields = ["host", "port", "database", "username"];
-const button = document.getElementById("submit");
-const target = document.getElementById("target");
-const notice = document.getElementById("notice");
-const list = document.getElementById("jobs");
-const template = document.getElementById("job");
+const backup = document.querySelector("#submit");
+const target = document.querySelector("#target");
+const backupState = document.querySelector("#backup-state");
+const historyState = document.querySelector("#history-state");
+const list = document.querySelector("#jobs");
+const template = document.querySelector("#job");
 const labels = { running: "运行中", succeeded: "成功", failed: "失败" };
-let jobs = [];
-let ready = false;
-let submitting = false;
-let refreshing = false;
-let submitError = "";
-let generation = 0;
-let initialHistoryLoaded = false;
 const dateFormat = new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "medium" });
+
+let jobs = [];
+let jobsSnapshot = "";
+let configured = null;
+let configuredTarget = "";
+let targetStale = true;
+let refreshing = null;
+let initialHistoryLoaded = false;
+let submitting = false;
+let saving = false;
+let connectionLoaded = false;
+let submitError = "";
 
 async function request(path, method = "GET", body) {
   const options = { method, cache: "no-store" };
@@ -35,77 +43,98 @@ async function request(path, method = "GET", body) {
   return data;
 }
 
-function showNotice(message, error = false) {
-  notice.textContent = message;
-  notice.toggleAttribute("data-error", error);
+function feedback(node, message, error = false) {
+  if (node.textContent !== message) node.textContent = message;
+  node.classList.toggle("error", error);
 }
 
-function updateButton() {
-  button.disabled = !ready || submitting || jobs.some((job) => job.status === "running");
-}
+function renderControls() {
+  const running = jobs.find((job) => job.status === "running");
+  const blocked = !configured || targetStale || Boolean(refreshing) || submitting || saving || Boolean(running);
+  backup.setAttribute("aria-disabled", String(blocked));
+  save.setAttribute("aria-disabled", String(fields.disabled || submitting));
+  backup.classList.toggle("primary", configured === true);
+  const label = submitting ? "正在提交…" : running ? "备份运行中" : "立即备份";
+  if (backup.textContent !== label) backup.textContent = label;
 
-function render() {
-  const items = jobs.map((job) => {
-    const row = template.content.firstElementChild.cloneNode(true);
-    const time = row.querySelector("time");
-    time.dateTime = job.startedAt;
-    time.textContent = dateFormat.format(new Date(job.startedAt));
-    const status = row.querySelector(".status");
-    status.dataset.status = job.status;
-    status.textContent = labels[job.status] || job.status;
-    const detail = row.querySelector(".detail");
-    detail.textContent = job.error || job.fileName || "";
-    detail.classList.toggle("file", Boolean(job.fileName));
-    return row;
-  });
-  list.replaceChildren(...items);
-  updateButton();
-}
-
-async function refresh() {
-  if (submitting || refreshing) return;
-  refreshing = true;
-  const startedAt = generation;
-  try {
-    const data = await request("backups");
-    if (submitting || startedAt !== generation) return;
-    target.textContent = data.target || "未配置备份目标";
-    jobs = data.jobs;
-    ready = data.configured;
-    if (!initialHistoryLoaded && !ready) connection.open = true;
-    initialHistoryLoaded = true;
-    const empty = jobs.length ? "" : "还没有备份。点击「立即备份」开始。";
-    const message = submitError || (ready ? empty : "请先保存数据库连接。");
-    showNotice(message, Boolean(submitError));
-    render();
-  } catch (error) {
-    if (submitting || startedAt !== generation) return;
-    ready = false;
-    target.textContent = "无法读取备份目标";
-    showNotice(error.message, true);
-    updateButton();
-  } finally {
-    refreshing = false;
+  if (submitting) {
+    feedback(backupState, `正在提交备份，目标为 ${configuredTarget}。`);
+  } else if (running) {
+    feedback(backupState, `正在备份 ${running.target || "未知目标"}。${submitError ? ` ${submitError}` : ""}`, Boolean(submitError));
+  } else if (submitError) {
+    feedback(backupState, submitError, true);
+  } else if (!targetStale && !configured) {
+    feedback(backupState, "请先保存数据库连接。");
+  } else {
+    feedback(backupState, "");
   }
 }
 
-button.addEventListener("click", async () => {
+function renderHistory() {
+  const snapshot = JSON.stringify(jobs);
+  if (snapshot === jobsSnapshot) return;
+  jobsSnapshot = snapshot;
+  list.replaceChildren(...jobs.map((job) => {
+    const row = template.content.firstElementChild.cloneNode(true);
+    const time = row.querySelector("time");
+    const date = new Date(job.startedAt);
+    time.dateTime = job.startedAt || "";
+    time.textContent = Number.isNaN(date.getTime()) ? "时间未知" : dateFormat.format(date);
+    const status = row.querySelector(".badge");
+    status.dataset.state = job.status;
+    status.textContent = labels[job.status] || job.status;
+    row.querySelector(".job-target").textContent = job.target || "未知目标";
+    row.querySelector(".result-label").textContent = job.error ? "失败原因" : job.fileName ? "备份文件" : "结果";
+    const result = row.querySelector(".result");
+    result.textContent = job.error || job.fileName || (job.status === "running" ? "等待备份完成" : "—");
+    result.classList.toggle("mono", Boolean(job.fileName) && !job.error);
+    return row;
+  }));
+}
+
+function refresh() {
+  if (refreshing || saving || submitting) return refreshing;
+  refreshing = (async () => {
+    try {
+      const data = await request("backups");
+      if (saving) return;
+      configured = data.configured;
+      configuredTarget = data.target;
+      targetStale = false;
+      target.textContent = configured ? `备份目标：${configuredTarget}` : "未配置备份目标";
+      jobs = data.jobs || [];
+      if (!initialHistoryLoaded && !configured) connection.open = true;
+      initialHistoryLoaded = true;
+      feedback(historyState, jobs.length ? "" : "还没有备份记录。");
+      renderHistory();
+    } catch (error) {
+      if (saving) return;
+      targetStale = true;
+      target.textContent = "无法确认备份目标，正在重试。";
+      feedback(historyState, `无法刷新备份历史：${error.message}`, true);
+    } finally {
+      refreshing = null;
+      renderControls();
+    }
+  })();
+  renderControls();
+  return refreshing;
+}
+
+backup.addEventListener("click", async () => {
+  if (backup.getAttribute("aria-disabled") === "true") return;
   submitting = true;
-  generation++;
   submitError = "";
-  updateButton();
-  showNotice("正在提交备份…");
+  renderControls();
   try {
     const job = await request("backups", "POST");
     jobs = [job, ...jobs.filter((item) => item.id !== job.id)];
-    showNotice("");
-    render();
+    feedback(historyState, "");
+    renderHistory();
   } catch (error) {
-    submitError = error.message;
-    showNotice(submitError, true);
+    submitError = `提交备份失败：${error.message}`;
   } finally {
     submitting = false;
-    updateButton();
     void refresh();
   }
 });
@@ -116,57 +145,64 @@ function displayConnection(data) {
   password.disabled = false;
   password.placeholder = data.passwordSaved ? "留空保留已保存的密码" : "可留空";
   clearPassword.checked = false;
-  document.getElementById("clear-password").hidden = !data.passwordSaved;
-}
-
-function showConnectionNotice(message, error = false) {
-  connectionNotice.textContent = message;
-  connectionNotice.toggleAttribute("data-error", error);
+  clearPassword.closest("label").hidden = !data.passwordSaved;
 }
 
 async function loadConnection() {
+  retry.hidden = true;
+  feedback(connectionNotice, "正在读取连接…");
   try {
     displayConnection(await request("connection"));
-    formFields.disabled = false;
-    showConnectionNotice("");
+    connectionLoaded = true;
+    fields.disabled = false;
+    save.setAttribute("aria-disabled", "false");
+    feedback(connectionNotice, "");
   } catch (error) {
-    showConnectionNotice(error.message, true);
+    feedback(connectionNotice, `无法读取连接：${error.message}`, true);
+    retry.hidden = false;
   }
 }
 
 clearPassword.addEventListener("change", () => {
   password.disabled = clearPassword.checked;
 });
+retry.addEventListener("click", loadConnection);
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const fields = new FormData(form);
+  if (!connectionLoaded || fields.disabled || submitting) return;
+  const data = new FormData(form);
   const payload = {
-    host: fields.get("host").trim(),
-    port: Number(fields.get("port")),
-    database: fields.get("database"),
-    username: fields.get("username"),
-    password: fields.get("password") || "",
+    host: data.get("host").trim(),
+    port: Number(data.get("port")),
+    database: data.get("database"),
+    username: data.get("username"),
+    password: data.get("password") || "",
     clearPassword: clearPassword.checked,
   };
-  formFields.disabled = true;
-  showConnectionNotice("正在保存…");
+  saving = true;
+  targetStale = true;
+  fields.disabled = true;
+  save.setAttribute("aria-disabled", "true");
+  save.textContent = "正在保存…";
+  target.textContent = "正在保存连接…";
+  submitError = "";
+  feedback(connectionNotice, "正在保存连接…");
+  renderControls();
   try {
     displayConnection(await request("connection", "PUT", payload));
-    generation++;
-    submitError = "";
-    showConnectionNotice("连接已保存。");
-    void refresh();
+    feedback(connectionNotice, "连接已保存。");
   } catch (error) {
-    showConnectionNotice(error.message, true);
+    feedback(connectionNotice, `保存连接失败：${error.message}`, true);
   } finally {
-    formFields.disabled = false;
-  }
-});
-
-connection.addEventListener("toggle", () => {
-  if (connection.open && formFields.disabled && connectionNotice.hasAttribute("data-error")) {
-    void loadConnection();
+    await refreshing;
+    saving = false;
+    target.textContent = "正在刷新备份目标…";
+    const targetRefresh = refresh();
+    await targetRefresh;
+    fields.disabled = false;
+    save.setAttribute("aria-disabled", "false");
+    save.textContent = "保存连接";
   }
 });
 

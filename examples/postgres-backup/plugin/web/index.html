@@ -8,14 +8,17 @@
   <script defer src="./app.js"></script>
 </head>
 <body>
-  <main>
-    <header class="target">
-      <div>
+  <header class="toolbar">
+    <div class="toolbar-content">
+      <div class="target">
         <h1>PostgreSQL 备份</h1>
         <p id="target">正在读取备份目标…</p>
       </div>
-      <button id="submit" type="button" disabled>立即备份</button>
-    </header>
+      <button id="submit" type="button" aria-describedby="target backup-state" aria-disabled="true">立即备份</button>
+    </div>
+  </header>
+  <main>
+    <p id="backup-state" class="feedback" role="status"></p>
 
     <details id="connection">
       <summary>数据库连接</summary>
@@ -28,27 +31,30 @@
             <label>用户<input name="username" required></label>
             <label class="password">密码<input name="password" type="password" autocomplete="new-password"></label>
           </div>
-          <label id="clear-password" hidden>
+          <label id="clear-password" class="check" hidden>
             <input name="clearPassword" type="checkbox"> 清除已保存的密码
           </label>
-          <button type="submit">保存连接</button>
         </fieldset>
-        <p id="connection-notice" role="status"></p>
+        <button id="save-connection" type="submit" class="primary" aria-disabled="true">保存连接</button>
+        <button id="retry-connection" type="button" hidden>重新读取连接</button>
+        <p id="connection-notice" class="feedback" role="status"></p>
       </form>
     </details>
 
-    <section aria-labelledby="history-title">
+    <section class="history" aria-labelledby="history-title">
       <h2 id="history-title">备份历史</h2>
-      <p id="notice" role="status"></p>
-      <ol id="jobs" aria-label="备份任务"></ol>
+      <p id="history-state" class="feedback" role="status">正在加载备份历史…</p>
+      <ol id="jobs"></ol>
     </section>
   </main>
 
   <template id="job">
     <li class="job">
-      <time></time>
-      <span class="status"></span>
-      <p class="detail"></p>
+      <div class="job-head"><time></time><span class="badge"></span></div>
+      <dl>
+        <dt>目标</dt><dd class="job-target"></dd>
+        <dt class="result-label">结果</dt><dd class="result"></dd>
+      </dl>
     </li>
   </template>
 </body>

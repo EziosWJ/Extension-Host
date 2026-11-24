@@ -3,45 +3,56 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>godesk-ext</title>
+  <title>godesk-ext 扩展</title>
   <link rel="stylesheet" href="./style.css">
+  <script defer src="./app.js"></script>
 </head>
 <body>
+  <header class="toolbar">
+    <div class="toolbar-content">
+      <h1>扩展</h1>
+      <button id="refresh" type="button" aria-label="刷新扩展列表">刷新</button>
+    </div>
+  </header>
   <main>
-    <header class="page-head">
-      <div>
-        <p class="eyebrow">GoDesk Extension Host</p>
-        <h1>godesk-ext</h1>
-        <p class="lede">本机插件管理。安装 ZIP 后启用插件，宿主会在重启后恢复已启用插件及其业务数据。</p>
-      </div>
-      <button id="refresh" type="button" class="ghost">刷新</button>
-    </header>
-
-    <div id="notice" class="notice" hidden></div>
-
-    <section class="card install-card">
-      <div>
-        <h2>安装插件包</h2>
-        <p class="muted">选择一个标准插件 ZIP。新安装的插件处于未启用状态。</p>
-      </div>
-      <form id="install-form" class="install-form">
-        <input id="package" type="file" accept=".zip,application/zip" required>
-        <button type="submit">安装</button>
+    <section class="install" aria-labelledby="install-title">
+      <h2 id="install-title">安装插件包</h2>
+      <form id="install-form">
+        <label for="package">插件 ZIP 文件</label>
+        <div class="install-controls">
+          <input id="package" name="package" type="file" accept=".zip,application/zip" required>
+          <button class="primary" type="submit">安装</button>
+        </div>
       </form>
     </section>
 
-    <section>
+    <p id="notice" class="feedback" role="status"></p>
+
+    <section aria-labelledby="list-title">
       <div class="section-head">
-        <h2>已安装插件</h2>
-        <span id="count" class="muted"></span>
+        <h2 id="list-title">已安装插件</h2>
+        <span id="count" class="caption"></span>
       </div>
+      <p id="list-state" class="feedback" role="status">正在加载插件…</p>
       <div id="plugins" class="plugins"></div>
     </section>
-
-    <footer>
-      <p>独立模式默认只监听本机回环地址。插件与宿主同源，请在安装前确认来源可信。</p>
-    </footer>
   </main>
-  <script src="./app.js"></script>
+
+  <dialog id="uninstall-dialog" aria-labelledby="uninstall-title" aria-describedby="uninstall-description">
+    <form id="uninstall-form">
+      <h2 id="uninstall-title"></h2>
+      <p id="uninstall-description">插件包和配置会被移除。业务数据默认保留。</p>
+      <label class="check">
+        <input id="purge" type="checkbox" aria-describedby="purge-warning">
+        同时删除插件业务数据
+      </label>
+      <p id="purge-warning" class="warning" role="status" hidden>删除后无法恢复插件业务数据，包括备份历史和保存在插件目录中的备份文件。</p>
+      <p id="uninstall-error" class="feedback error" role="alert"></p>
+      <div class="actions dialog-actions">
+        <button id="cancel-uninstall" type="button" autofocus>取消</button>
+        <button class="danger" type="submit">卸载</button>
+      </div>
+    </form>
+  </dialog>
 </body>
 </html>

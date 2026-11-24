@@ -1,34 +1,35 @@
 const pluginsRoot = document.querySelector("#plugins");
 const countLabel = document.querySelector("#count");
+const listState = document.querySelector("#list-state");
 const notice = document.querySelector("#notice");
 const installForm = document.querySelector("#install-form");
 const packageInput = document.querySelector("#package");
 const refreshButton = document.querySelector("#refresh");
+const dialog = document.querySelector("#uninstall-dialog");
+const uninstallForm = document.querySelector("#uninstall-form");
+const cancelUninstall = document.querySelector("#cancel-uninstall");
+const purge = document.querySelector("#purge");
+const purgeWarning = document.querySelector("#purge-warning");
+const uninstallError = document.querySelector("#uninstall-error");
 
-const STATUS_LABELS = {
+const statusLabels = {
   stopped: "已停止",
   starting: "启动中",
   running: "运行中",
   stopping: "停止中",
   failed: "启动失败",
 };
-const STATUS_CLASSES = {
-  stopped: "off",
-  starting: "pending",
-  running: "running",
-  stopping: "pending",
-  failed: "failed",
-};
 
-let plugins = [];
+const rows = new Map();
+let refreshVersion = 0;
+let uninstalling = null;
 
 async function api(path, options = {}) {
-  const response = await fetch(path, options);
+  const response = await fetch(path, { cache: "no-store", ...options });
   const type = response.headers.get("content-type") || "";
-  let body = null;
-  if (response.status !== 204) {
-    body = type.includes("application/json") ? await response.json() : await response.text();
-  }
+  const body = response.status === 204 ? null : type.includes("application/json")
+    ? await response.json()
+    : await response.text();
   if (!response.ok) {
     const message = body && typeof body === "object" ? body.error : body;
     throw new Error(message || response.statusText || `HTTP ${response.status}`);
@@ -36,271 +37,357 @@ async function api(path, options = {}) {
   return body;
 }
 
-function showNotice(message, kind = "error") {
-  notice.hidden = false;
-  notice.className = `notice ${kind}`;
-  notice.textContent = message;
+function feedback(node, message, kind = "") {
+  node.textContent = message;
+  node.classList.toggle("error", kind === "error");
+  node.classList.toggle("success", kind === "success");
 }
 
-function hideNotice() {
-  notice.hidden = true;
-  notice.textContent = "";
-}
-
-function element(tag, className, text) {
+function element(tag, className, content) {
   const node = document.createElement(tag);
   if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
+  if (content !== undefined) node.textContent = content;
   return node;
-}
-
-function badge(label, className) {
-  return element("span", `badge ${className}`, label);
-}
-
-function formatTime(value) {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
 function actionButton(label, className, onClick) {
   const button = element("button", className, label);
   button.type = "button";
-  button.addEventListener("click", async () => {
-    button.disabled = true;
-    try {
-      await onClick();
-    } finally {
-      button.disabled = false;
-    }
-  });
+  button.addEventListener("click", onClick);
   return button;
 }
 
-function actionPath(id, action, query = "") {
-  return `/api/v1/extensions/${encodeURIComponent(id)}/${action}${query}`;
+function pluginPath(id) {
+  return `/api/v1/extensions/${encodeURIComponent(id)}`;
 }
 
-async function runAction(plugin, action, successMessage, query = "") {
-  try {
-    if (action === "uninstall") {
-      await api(`/api/v1/extensions/${encodeURIComponent(plugin.id)}${query}`, { method: "DELETE" });
-    } else {
-      await api(actionPath(plugin.id, action), { method: "POST" });
-    }
-    showNotice(successMessage, "ok");
-  } catch (error) {
-    showNotice(error.message);
-  }
-  await refresh(false);
+function setBusy(button, busy, label) {
+  button.setAttribute("aria-disabled", String(busy));
+  button.textContent = label;
 }
+
+function confirmUninstall(plugin, trigger) {
+  uninstalling = { plugin, trigger, pending: false };
+  uninstallForm.reset();
+  purgeWarning.hidden = true;
+  uninstallError.textContent = "";
+  dialog.querySelector("h2").textContent = `卸载 ${plugin.name}？`;
+  dialog.showModal();
+}
+
+purge.addEventListener("change", () => {
+  purgeWarning.hidden = !purge.checked;
+});
+
+cancelUninstall.addEventListener("click", () => {
+  if (!uninstalling.pending) dialog.close();
+});
+
+dialog.addEventListener("cancel", (event) => {
+  if (uninstalling.pending) event.preventDefault();
+});
+
+dialog.addEventListener("close", () => {
+  uninstalling.trigger.focus();
+  if (!uninstalling.trigger.isConnected) refreshButton.focus();
+  uninstalling = null;
+});
+
+uninstallForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (uninstalling.pending) return;
+  const { plugin } = uninstalling;
+  const shouldPurge = purge.checked;
+  const submit = uninstallForm.querySelector("[type=submit]");
+  uninstalling.pending = true;
+  purge.disabled = true;
+  cancelUninstall.setAttribute("aria-disabled", "true");
+  setBusy(submit, true, "正在卸载…");
+  uninstallError.textContent = "";
+  try {
+    await api(pluginPath(plugin.id) + (shouldPurge ? "?purge=true" : ""), { method: "DELETE" });
+    dialog.close();
+    feedback(notice, `已卸载 ${plugin.name}，业务数据${shouldPurge ? "已删除" : "已保留"}。`, "success");
+    await refresh(false);
+  } catch (error) {
+    uninstallError.textContent = `卸载失败：${error.message}`;
+  } finally {
+    if (uninstalling?.plugin === plugin) uninstalling.pending = false;
+    purge.disabled = false;
+    cancelUninstall.removeAttribute("aria-disabled");
+    setBusy(submit, false, "卸载");
+  }
+});
 
 function configForm(plugin) {
-  const schema = plugin.configSchema || {};
-  const keys = Object.keys(schema).sort();
-  if (keys.length === 0) return null;
+  const form = element("form", "config");
+  form.append(element("h4", "", "插件配置"));
+  const grid = element("div", "field-grid");
+  const fields = [];
+  const status = element("p", "feedback");
+  status.setAttribute("role", "status");
+  const save = element("button", "primary", "保存配置");
+  save.type = "submit";
 
-  const fieldset = document.createElement("fieldset");
-  fieldset.append(element("legend", "", "插件配置"));
-  const grid = element("div", "detail-grid");
-  const inputs = new Map();
-
-  for (const key of keys) {
-    const field = schema[key];
-    const wrapper = element("div", "field");
-    const label = element("label", "");
-    label.append(document.createTextNode(key));
-    if (field.required) {
-      label.append(element("span", "required", " *"));
+  for (const key of Object.keys(plugin.configSchema).sort()) {
+    const field = plugin.configSchema[key];
+    const label = element("label", field.type === "boolean" ? "check" : "field");
+    const input = document.createElement("input");
+    input.type = field.type === "boolean" ? "checkbox" : field.secret ? "password" : field.type;
+    if (input.type === "number") input.step = "any";
+    if (input.type === "password") {
+      input.placeholder = "留空保留现有值";
+      input.autocomplete = "new-password";
     }
-    if (field.secret) {
-      label.append(document.createTextNode("（密钥）"));
-    }
-    wrapper.append(label);
-
-    let input;
-    if (field.type === "boolean") {
-      const check = element("div", "check");
-      input = document.createElement("input");
-      input.type = "checkbox";
-      input.checked = Boolean(plugin.config[key]);
-      check.append(input, document.createTextNode(field.default ? "默认开启" : "启用"));
-      wrapper.append(check);
-    } else {
-      input = document.createElement("input");
-      input.type = field.secret ? "password" : field.type === "number" ? "number" : "text";
-      if (field.type === "number") input.step = "any";
-      if (field.secret) {
-        input.placeholder = "留空保留现有值";
-        input.autocomplete = "new-password";
-      } else if (plugin.config[key] !== undefined && plugin.config[key] !== null) {
-        input.value = String(plugin.config[key]);
-      }
-      wrapper.append(input);
-    }
-    inputs.set(key, { input, field });
-    grid.append(wrapper);
+    const title = element("span", "", key + (field.required ? " *" : "") + (field.secret ? "（密钥）" : ""));
+    label.append(...(input.type === "checkbox" ? [input, title] : [title, input]));
+    const property = input.type === "checkbox" ? "checked" : "value";
+    fields.push({ key, field, input, property, baseline: input[property] });
+    grid.append(label);
   }
 
-  fieldset.append(grid);
-  const actions = element("div", "config-actions");
-  const save = actionButton("保存配置", "", async () => {
-    const values = {};
-    for (const [key, { input, field }] of inputs) {
-      if (field.type === "boolean") {
-        values[key] = input.checked;
-      } else if (field.secret) {
-        if (input.value !== "") values[key] = input.value;
-      } else if (field.type === "number") {
-        if (input.value !== "") values[key] = Number(input.value);
-      } else {
-        values[key] = input.value;
-      }
+  function update(config = {}) {
+    for (const entry of fields) {
+      const { key, field, input, property, baseline } = entry;
+      const next = property === "checked" ? Boolean(config[key]) : field.secret ? "" : String(config[key] ?? "");
+      if (input[property] === baseline && baseline !== next) input[property] = next;
+      entry.baseline = next;
     }
+  }
+
+  update(plugin.config);
+  form.append(grid, save, status);
+  let saving = false;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (saving) return;
+    const values = Object.create(null);
+    const submitted = new Map();
+    for (const { key, field, input, property } of fields) {
+      const value = input[property];
+      submitted.set(key, value);
+      if (value === "" && (field.secret || field.type === "number")) continue;
+      values[key] = field.type === "number" ? Number(value) : value;
+    }
+    saving = true;
+    setBusy(save, true, "正在保存…");
+    feedback(status, "");
     try {
-      await api(actionPath(plugin.id, "config"), {
+      const saved = await api(`${pluginPath(plugin.id)}/config`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(values),
       });
-      showNotice("配置已保存。", "ok");
+      for (const entry of fields) {
+        const { key, field, input, property } = entry;
+        if (input[property] !== submitted.get(key)) continue;
+        if (field.secret && property === "value") input.value = "";
+        entry.baseline = input[property];
+      }
+      update(saved?.config);
+      feedback(status, "配置已保存。", "success");
       await refresh(false);
     } catch (error) {
-      showNotice(error.message);
+      feedback(status, `保存失败：${error.message}`, "error");
+    } finally {
+      saving = false;
+      setBusy(save, false, "保存配置");
     }
   });
-  actions.append(save, element("span", "muted", "密钥值不会出现在管理响应中。"));
-  fieldset.append(actions);
-  return fieldset;
+  return { form, update };
 }
 
-function pluginCard(plugin) {
-  const card = element("article", "plugin");
+function formatTime(value) {
+  return value ? new Date(value).toLocaleString() : "—";
+}
 
-  const head = element("div", "plugin-head");
-  const title = element("div", "");
-  title.append(element("h3", "plugin-title", plugin.name));
-  title.append(element("p", "plugin-id", `${plugin.id} · v${plugin.version}`));
-  const badges = element("div", "badges");
-  badges.append(badge(plugin.enabled ? "已启用" : "未启用", plugin.enabled ? "on" : "off"));
-  badges.append(badge(STATUS_LABELS[plugin.status] || plugin.status, STATUS_CLASSES[plugin.status] || "off"));
-  head.append(title, badges);
-  card.append(head);
-
-  if (plugin.error) {
-    card.append(element("p", "error-box", plugin.error));
-  }
-
-  const paths = element("div", "paths");
-  if (plugin.hasWeb) {
-    const item = element("span", "");
-    item.append("Web: ", element("code", "", plugin.webPath));
-    paths.append(item);
-  }
-  if (plugin.hasLua) {
-    const api = element("span", "");
-    api.append("API: ", element("code", "", plugin.apiPath));
-    paths.append(api);
-    const events = element("span", "");
-    events.append("事件: ", element("code", "", plugin.eventsPath));
-    paths.append(events);
-  }
-  if (!plugin.hasWeb && !plugin.hasLua) {
-    paths.append(element("span", "", "无入口"));
-  }
-  card.append(paths);
-
+function createRow() {
+  const node = element("article", "plugin");
+  const header = element("div", "plugin-head");
+  const identity = element("div", "identity");
+  const title = element("h3");
+  const version = element("span", "caption");
+  const badge = element("span", "badge");
+  identity.append(title, version, badge);
   const actions = element("div", "actions");
-  if (!plugin.enabled) {
-    actions.append(actionButton("启用", "", () => runAction(plugin, "enable", `已启用 ${plugin.name}。`)));
-  } else {
-    if (plugin.status !== "running" && plugin.status !== "starting") {
-      actions.append(actionButton("启动", "", () => runAction(plugin, "start", `已启动 ${plugin.name}。`)));
+  header.append(identity, actions);
+  const error = element("p", "feedback error");
+  const details = element("details");
+  const summary = element("summary", "", "详情与操作");
+  const body = element("div", "details-body");
+  const metadata = element("dl", "metadata");
+  const more = element("div", "actions");
+  details.append(summary, body);
+  body.append(metadata, more);
+  node.append(header, error, details);
+
+  let signature;
+  let schema;
+  let config;
+  let pending = false;
+
+  function update(plugin) {
+    title.textContent = plugin.name;
+    version.textContent = `v${plugin.version}`;
+    badge.dataset.state = plugin.enabled ? plugin.status : "disabled";
+    badge.textContent = plugin.enabled ? statusLabels[plugin.status] || plugin.status : "未启用";
+    error.textContent = plugin.error || "";
+
+    metadata.replaceChildren();
+    function add(label, value, code = false) {
+      metadata.append(element("dt", "", label), element("dd", code ? "mono" : "", value));
     }
-    if (plugin.status === "running" || plugin.status === "starting") {
-      actions.append(actionButton("停止", "ghost", () => runAction(plugin, "stop", `已停止 ${plugin.name}，启用意图保留。`)));
+    add("插件 ID", plugin.id, true);
+    add("安装时间", formatTime(plugin.installedAt));
+    add("本次启动", formatTime(plugin.startedAt));
+    if (plugin.hasWeb) add("Web 路径", plugin.webPath, true);
+    if (plugin.hasLua) {
+      add("API 路径", plugin.apiPath, true);
+      add("事件路径", plugin.eventsPath, true);
     }
-    actions.append(actionButton("禁用", "ghost", () => runAction(plugin, "disable", `已禁用 ${plugin.name}。`)));
+    if (plugin.logPath) add("日志路径", plugin.logPath, true);
+
+    const nextSchema = JSON.stringify(plugin.configSchema || {});
+    if (nextSchema !== schema) {
+      if (config?.form.contains(document.activeElement)) summary.focus();
+      config?.form.remove();
+      config = Object.keys(plugin.configSchema || {}).length ? configForm(plugin) : null;
+      if (config) body.insertBefore(config.form, more);
+      schema = nextSchema;
+    }
+    config?.update(plugin.config);
+
+    const nextSignature = JSON.stringify([plugin.enabled, plugin.status, plugin.webPath, plugin.name]);
+    if (nextSignature === signature) return;
+    signature = nextSignature;
+    const active = document.activeElement;
+    const restoreAction = actions.contains(active) || more.contains(active);
+    actions.replaceChildren();
+    more.replaceChildren();
+
+    function lifecycle(label, action, style = "") {
+      const button = actionButton(label, style, async () => {
+        if (pending) return;
+        pending = true;
+        setBusy(button, true, `${label}中…`);
+        try {
+          await api(`${pluginPath(plugin.id)}/${action}`, { method: "POST" });
+          feedback(notice, `${plugin.name}已${label === "重试" ? "启动" : label}。`, "success");
+          await refresh(false);
+        } catch (cause) {
+          feedback(notice, `${label}失败：${cause.message}`, "error");
+          await refresh(false);
+        } finally {
+          pending = false;
+          setBusy(button, false, label);
+        }
+      });
+      button.dataset.action = action;
+      return button;
+    }
+
+    if (!plugin.enabled) {
+      actions.append(lifecycle("启用", "enable", "primary"));
+    } else if (plugin.status === "running" && plugin.hasWeb) {
+      const link = element("a", "button primary", "打开");
+      link.href = plugin.webPath;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.dataset.action = "open";
+      actions.append(link);
+    } else if (plugin.status === "failed" || plugin.status === "stopped") {
+      actions.append(lifecycle(plugin.status === "failed" ? "重试" : "启动", "start", "primary"));
+    }
+    if (plugin.enabled && plugin.status === "running") {
+      (plugin.hasWeb ? more : actions).append(lifecycle("停止", "stop"));
+    }
+    if (plugin.enabled && !["starting", "stopping"].includes(plugin.status)) {
+      more.append(lifecycle("禁用", "disable"));
+    }
+    const uninstall = actionButton("卸载", "danger-text", () => {
+      if (!pending) confirmUninstall(plugin, uninstall);
+    });
+    uninstall.dataset.action = "uninstall";
+    more.append(uninstall);
+
+    if (restoreAction) {
+      const equivalent = node.querySelector(`[data-action="${active.dataset.action}"]`);
+      (equivalent || actions.firstElementChild || summary).focus();
+    }
   }
-  if (plugin.hasWeb && plugin.status === "running") {
-    const link = element("a", "button-link", "打开插件页面");
-    link.href = plugin.webPath;
-    link.target = "_blank";
-    link.rel = "noopener";
-    actions.append(link);
-  }
-  actions.append(actionButton("卸载", "danger", () => {
-    if (!window.confirm(`卸载 ${plugin.name}？默认保留业务数据。`)) return;
-    return runAction(plugin, "uninstall", `已卸载 ${plugin.name}，业务数据保留。`);
-  }));
-  actions.append(actionButton("卸载并清除数据", "danger", () => {
-    if (!window.confirm(`卸载 ${plugin.name} 并删除业务数据库？此操作不可恢复。`)) return;
-    return runAction(plugin, "uninstall", `已卸载 ${plugin.name}，业务数据已清除。`, "?purge=true");
-  }));
-  card.append(actions);
 
-  const details = element("div", "detail-grid");
-  const installed = element("div", "field");
-  installed.append(element("label", "", "安装时间"), element("div", "", formatTime(plugin.installedAt)));
-  const started = element("div", "field");
-  started.append(element("label", "", "本次启动"), element("div", "", formatTime(plugin.startedAt)));
-  details.append(installed, started);
-  card.append(details);
-
-  const form = configForm(plugin);
-  if (form) card.append(form);
-
-  card.append(element("p", "log-path", `日志：${plugin.logPath}`));
-  return card;
+  return { node, update };
 }
 
-function render() {
+function render(plugins) {
   countLabel.textContent = `${plugins.length} 个插件`;
-  pluginsRoot.replaceChildren();
-  if (plugins.length === 0) {
-    pluginsRoot.append(element("div", "empty-state", "还没有安装插件。选择一个 ZIP 开始。"));
-    return;
+  const ids = new Set(plugins.map((plugin) => plugin.id));
+  for (const [id, row] of rows) {
+    if (ids.has(id)) continue;
+    if (row.node.contains(document.activeElement)) refreshButton.focus();
+    row.node.remove();
+    rows.delete(id);
   }
+
   const sorted = [...plugins].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  let next = pluginsRoot.firstElementChild;
   for (const plugin of sorted) {
-    pluginsRoot.append(pluginCard(plugin));
+    let row = rows.get(plugin.id);
+    if (!row) {
+      row = createRow();
+      rows.set(plugin.id, row);
+    }
+    row.update(plugin);
+    if (row.node !== next) {
+      const active = document.activeElement;
+      pluginsRoot.insertBefore(row.node, next);
+      if (row.node.contains(active)) active.focus({ preventScroll: true });
+    }
+    next = row.node.nextElementSibling;
   }
 }
 
 async function refresh(clearNotice = true) {
-  refreshButton.disabled = true;
+  const version = ++refreshVersion;
+  setBusy(refreshButton, true, "正在刷新…");
+  feedback(listState, "正在加载插件…");
   try {
     const data = await api("/api/v1/extensions");
-    plugins = data.plugins || [];
-    if (clearNotice) hideNotice();
-    render();
+    if (version !== refreshVersion) return;
+    if (clearNotice) feedback(notice, "");
+    const plugins = data.plugins || [];
+    render(plugins);
+    feedback(listState, plugins.length ? "" : "还没有安装插件。请选择 ZIP 文件。");
   } catch (error) {
-    showNotice(`无法读取插件列表：${error.message}`);
+    if (version === refreshVersion) {
+      feedback(listState, `无法读取插件列表：${error.message}。请刷新重试。`, "error");
+    }
   } finally {
-    refreshButton.disabled = false;
+    if (version === refreshVersion) setBusy(refreshButton, false, "刷新");
   }
 }
 
 installForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const file = packageInput.files[0];
-  if (!file) return;
   const submit = installForm.querySelector("button");
-  submit.disabled = true;
+  const file = packageInput.files[0];
+  if (!file || submit.getAttribute("aria-disabled") === "true") return;
+  setBusy(submit, true, "正在安装…");
   try {
     const form = new FormData();
     form.append("package", file);
     const plugin = await api("/api/v1/extensions", { method: "POST", body: form });
-    packageInput.value = "";
-    showNotice(`已安装 ${plugin.name} ${plugin.version}，当前未启用。`, "ok");
+    if (packageInput.files[0] === file) packageInput.value = "";
+    feedback(notice, `已安装 ${plugin.name} ${plugin.version}，当前未启用。`, "success");
     await refresh(false);
   } catch (error) {
-    showNotice(`安装失败：${error.message}`);
+    feedback(notice, `安装失败：${error.message}`, "error");
   } finally {
-    submit.disabled = false;
+    setBusy(submit, false, "安装");
   }
 });
 
-refreshButton.addEventListener("click", () => refresh());
-refresh();
+refreshButton.addEventListener("click", () => {
+  if (refreshButton.getAttribute("aria-disabled") !== "true") void refresh();
+});
+void refresh();

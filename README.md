@@ -5,6 +5,7 @@ GoDesk 的插件宿主。仓库提供公共 Go 模块、独立命令 `godesk-ext
 当前完成实施 Spec 的工单 01（独立运行闭环）、工单 02（GoDesk 嵌入），以及工单 03 的宿主侧共享 systemd 能力与 `host.services` 授权；GoDesk 原生服务管理的接入随 v0.2.0 发布。Mihomo 插件和完整开发命令由工单 04–05 跟踪。另提供 [PostgreSQL 备份示例](examples/postgres-backup/README.md)，用于验收 Lua 命令执行和同一 ZIP 的双模式行为。
 
 - 共享契约：[GoDesk 插件首版契约](https://github.com/EziosWJ/GoDesk/blob/main/docs/extensions.md)
+- 前端设计：[Extension Host 与插件前端设计规范](docs/frontend-design.md)
 - 实施顺序：[Extension Host 实施 Spec](https://github.com/EziosWJ/GoDesk/blob/main/.scratch/extension-host/spec.md)
 - 进程与仓库边界：[ADR 0009](https://github.com/EziosWJ/GoDesk/blob/main/docs/adr/0009-embed-extension-host-from-separate-module.md)
 

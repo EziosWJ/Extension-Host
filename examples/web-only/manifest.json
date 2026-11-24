@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "com.godesk.webonly",
+  "name": "Web-only Example",
+  "version": "0.1.0",
+  "hostApi": { "min": 1, "max": 1 },
+  "entry": { "web": "web/index.html" }
+}

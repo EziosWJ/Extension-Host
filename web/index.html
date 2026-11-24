@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>godesk-ext</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main>
+    <header class="page-head">
+      <div>
+        <p class="eyebrow">GoDesk Extension Host</p>
+        <h1>godesk-ext</h1>
+        <p class="lede">本机插件管理。安装 ZIP 后启用插件，宿主会在重启后恢复已启用插件及其业务数据。</p>
+      </div>
+      <button id="refresh" type="button" class="ghost">刷新</button>
+    </header>
+
+    <div id="notice" class="notice" hidden></div>
+
+    <section class="card install-card">
+      <div>
+        <h2>安装插件包</h2>
+        <p class="muted">选择一个标准插件 ZIP。新安装的插件处于未启用状态。</p>
+      </div>
+      <form id="install-form" class="install-form">
+        <input id="package" type="file" accept=".zip,application/zip" required>
+        <button type="submit">安装</button>
+      </form>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>已安装插件</h2>
+        <span id="count" class="muted"></span>
+      </div>
+      <div id="plugins" class="plugins"></div>
+    </section>
+
+    <footer>
+      <p>独立模式默认只监听本机回环地址。插件与宿主同源，请在安装前确认来源可信。</p>
+    </footer>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>

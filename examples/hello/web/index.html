@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hello Extension</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">GoDesk Extension</p>
+      <h1>Hello Extension</h1>
+      <p class="lede">这个页面通过原生 HTTP 调用 Lua，通过原生 WebSocket 接收事件，并把访问次数写入插件自己的 SQLite。</p>
+    </header>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Lua 响应</h2>
+        <span id="connection" class="badge badge-idle">连接中</span>
+      </div>
+      <p id="message" class="message">尚未调用 Lua。</p>
+      <dl class="facts">
+        <div><dt>访问次数</dt><dd id="visits">—</dd></div>
+        <div><dt>说明</dt><dd id="note">—</dd></div>
+        <div><dt>密钥配置</dt><dd id="secret">—</dd></div>
+      </dl>
+      <div class="actions">
+        <button id="call" type="button">调用 Lua</button>
+        <button id="clear" type="button" class="ghost">清空事件</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>实时事件</h2>
+        <span class="muted">Mihomo 等插件会通过同一事件流推送实时数据</span>
+      </div>
+      <ol id="events" class="events"><li class="empty">等待事件…</li></ol>
+    </section>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>

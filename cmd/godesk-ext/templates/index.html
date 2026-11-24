@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Name}}</title>
+  <link rel="stylesheet" href="./style.css">
+  {{- if .Lua }}
+  <script defer src="./app.js"></script>
+  {{- end }}
+</head>
+<body>
+  <main>
+    <h1>{{.Name}}</h1>
+    {{- if .Lua }}
+    <button id="call" type="button">调用 Lua</button>
+    <p id="result" role="status"></p>
+    {{- else }}
+    <p>你好，插件已运行。</p>
+    {{- end }}
+  </main>
+</body>
+</html>

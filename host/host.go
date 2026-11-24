@@ -29,14 +29,15 @@ const HostAPIVersion = manifest.HostAPIVersion
 
 // Package errors.
 var (
-	ErrNotFound       = lifecycle.ErrNotFound
-	ErrConflict       = lifecycle.ErrConflict
-	ErrNotEnabled     = lifecycle.ErrNotEnabled
-	ErrNotRunning     = lifecycle.ErrNotRunning
-	ErrNoLua          = lifecycle.ErrNoLua
-	ErrNoWeb          = lifecycle.ErrNoWeb
-	ErrClosed         = lifecycle.ErrClosed
-	ErrInvalidPackage = errors.New("invalid plugin package")
+	ErrNotFound          = lifecycle.ErrNotFound
+	ErrConflict          = lifecycle.ErrConflict
+	ErrNotEnabled        = lifecycle.ErrNotEnabled
+	ErrNotRunning        = lifecycle.ErrNotRunning
+	ErrNoLua             = lifecycle.ErrNoLua
+	ErrNoWeb             = lifecycle.ErrNoWeb
+	ErrClosed            = lifecycle.ErrClosed
+	ErrInvalidPackage    = errors.New("invalid plugin package")
+	ErrInvalidHomePlugin = errors.New("首页插件必须已启用且带有网页")
 )
 
 // Status is the current instance state of a plugin.
@@ -97,6 +98,8 @@ type HTTPOptions struct {
 	RequireSession func(http.Handler) http.Handler
 	// AllowedOrigins lists extra WebSocket origins, useful behind a development proxy.
 	AllowedOrigins []string
+	// DevelopmentRevision enables browser refresh for a plugin when it returns a revision.
+	DevelopmentRevision func(pluginID string) string
 }
 
 // Plugin is the management view of an installed plugin.
@@ -194,9 +197,37 @@ func (h *Host) Restore(ctx context.Context) error {
 // Handler returns the extension HTTP routes.
 func (h *Host) Handler(opts HTTPOptions) http.Handler {
 	return gateway.New(h.manager, h.logger, gateway.Options{
-		RequireSession: opts.RequireSession,
-		AllowedOrigins: opts.AllowedOrigins,
+		RequireSession:      opts.RequireSession,
+		AllowedOrigins:      opts.AllowedOrigins,
+		DevelopmentRevision: opts.DevelopmentRevision,
 	})
+}
+
+// Get returns one installed plugin.
+func (h *Host) Get(id string) (Plugin, bool) {
+	view, ok := h.manager.Get(id)
+	return pluginFromView(view), ok
+}
+
+// HomePlugin returns the ID selected for the standalone home page.
+func (h *Host) HomePlugin(ctx context.Context) (string, error) {
+	return h.store.HomePlugin(ctx)
+}
+
+// SetHomePlugin selects an enabled web plugin or clears the selection.
+func (h *Host) SetHomePlugin(ctx context.Context, id string) error {
+	if id != "" {
+		plugin, ok := h.Get(id)
+		if !ok || !plugin.Enabled || !plugin.HasWeb {
+			return ErrInvalidHomePlugin
+		}
+	}
+	return h.store.SetHomePlugin(ctx, id)
+}
+
+// ReloadDevelopment replaces an installed development plugin using the same data directory.
+func (h *Host) ReloadDevelopment(ctx context.Context, pkg *bundle.Bundle, webOnly bool) error {
+	return h.manager.ReloadDevelopment(ctx, pkg, webOnly)
 }
 
 // List returns all installed plugins.

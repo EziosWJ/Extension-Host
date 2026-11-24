@@ -362,7 +362,8 @@ func (m *Manager) Uninstall(ctx context.Context, id string, purgeData bool) erro
 	m.mu.Unlock()
 
 	var errs []error
-	if err := os.RemoveAll(filepath.Join(m.packagesDir, id)); err != nil {
+	packageDir := m.packageDir(state.record)
+	if err := os.RemoveAll(packageDir); err != nil {
 		errs = append(errs, fmt.Errorf("remove plugin package: %w", err))
 	}
 	if purgeData {
@@ -496,15 +497,20 @@ func (m *Manager) RunningInstance(id string) (*Instance, error) {
 
 // WebInfo returns the directory and index file for a plugin web entry.
 func (m *Manager) WebInfo(id string) (string, string, error) {
-	instance, err := m.RunningInstance(id)
-	if err != nil {
-		return "", "", err
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.states[id]
+	if state == nil {
+		return "", "", fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
-	if !instance.HasWeb() {
+	if state.instance == nil {
+		return "", "", fmt.Errorf("%w: %s", ErrNotRunning, id)
+	}
+	entry := state.manifest.Entry.Web
+	if entry == "" {
 		return "", "", fmt.Errorf("%w: %s", ErrNoWeb, id)
 	}
-	dir, index := instance.WebInfo()
-	return dir, index, nil
+	return filepath.Join(m.packageDir(state.record), filepath.FromSlash(filepath.Dir(entry))), filepath.Base(entry), nil
 }
 
 func (m *Manager) state(id string) (*state, error) {
@@ -553,11 +559,11 @@ func (m *Manager) startLocked(ctx context.Context, state *state) error {
 	instance := newInstance(instanceOptions{
 		id:         record.ID,
 		version:    record.Version,
-		packageDir: filepath.Join(m.packagesDir, record.ID),
+		packageDir: m.packageDir(record),
 		manifest:   parsed,
 		pluginDir:  filepath.Join(m.pluginsDir, record.ID),
 		logPath:    logPath,
-		config:     m.configGetter(record.ID),
+		config:     m.configGetter(state),
 		services:   servicesOptions,
 	})
 	if err := instance.Start(ctx); err != nil {
@@ -621,6 +627,9 @@ func (m *Manager) stopLocked(ctx context.Context, state *state) error {
 	m.mu.Unlock()
 
 	err := instance.Stop(ctx)
+	if instance.packageDir != m.packageDir(state.record) {
+		m.removeDevelopmentSnapshot(instance.packageDir)
+	}
 	m.mu.Lock()
 	state.status = StatusStopped
 	state.lastError = ""
@@ -632,16 +641,19 @@ func (m *Manager) stopLocked(ctx context.Context, state *state) error {
 	return err
 }
 
-func (m *Manager) configGetter(id string) func() map[string]any {
+func (m *Manager) configGetter(state *state) func() map[string]any {
 	return func() map[string]any {
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		state := m.states[id]
-		if state == nil {
-			return map[string]any{}
-		}
 		return copyMap(state.record.Config)
 	}
+}
+
+func (m *Manager) packageDir(record store.Plugin) string {
+	if record.DevPackage != "" {
+		return filepath.Join(m.packagesDir, record.DevPackage)
+	}
+	return filepath.Join(m.packagesDir, record.ID)
 }
 
 func (m *Manager) viewLocked(state *state) View {

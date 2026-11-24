@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/EziosWJ/Extension-Host/internal/manifest"
@@ -33,6 +34,24 @@ type Bundle struct {
 // Absolute paths in exclude are skipped, which keeps a pack destination
 // inside the source directory out of the package.
 func LoadDir(dir string, exclude ...string) (*Bundle, error) {
+	return loadDir(dir, false, exclude...)
+}
+
+// LoadProject reads only the runtime files in a standard plugin project.
+func LoadProject(dir string) (*Bundle, error) {
+	pkg, err := loadDir(dir, true)
+	if err != nil {
+		return nil, err
+	}
+	for kind, entry := range map[string]string{"web": pkg.Manifest.Entry.Web, "lua": pkg.Manifest.Entry.Lua} {
+		if entry != "" && !strings.HasPrefix(entry, kind+"/") {
+			return nil, fmt.Errorf("project: entry.%s must be inside %s/", kind, kind)
+		}
+	}
+	return pkg, nil
+}
+
+func loadDir(dir string, project bool, exclude ...string) (*Bundle, error) {
 	root, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, fmt.Errorf("package directory: %w", err)
@@ -60,6 +79,26 @@ func LoadDir(dir string, exclude ...string) (*Bundle, error) {
 		if current == root {
 			return nil
 		}
+		rel, err := filepath.Rel(root, current)
+		if err != nil {
+			return err
+		}
+		name := filepath.ToSlash(rel)
+		if project {
+			top, _, _ := strings.Cut(name, "/")
+			if top != "manifest.json" && top != "web" && top != "lua" {
+				if entry.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if name == "manifest.json" && !entry.Type().IsRegular() {
+				return fmt.Errorf("project: manifest.json must be a regular file")
+			}
+			if (name == "web" || name == "lua") && !entry.IsDir() {
+				return fmt.Errorf("project: %s must be a directory", name)
+			}
+		}
 		if skipped[current] {
 			if entry.IsDir() {
 				return filepath.SkipDir
@@ -80,11 +119,6 @@ func LoadDir(dir string, exclude ...string) (*Bundle, error) {
 		if len(files) >= maxFileCount {
 			return fmt.Errorf("package contains more than %d files", maxFileCount)
 		}
-		rel, err := filepath.Rel(root, current)
-		if err != nil {
-			return err
-		}
-		name := filepath.ToSlash(rel)
 		if !manifest.ValidPackagePath(name) {
 			return fmt.Errorf("package contains invalid path %q", name)
 		}

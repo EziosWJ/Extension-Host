@@ -89,6 +89,24 @@ h3, h4 { font: inherit; font-weight: 650; }
 .toolbar-content { min-height: 44px; }
 main { container-type: inline-size; }
 .install { margin-bottom: 20px; }
+.home-settings {
+  margin-bottom: 20px;
+  padding-top: 12px;
+  border-top: 1px solid var(--react-web-desktop-divider);
+}
+#home-form { display: grid; gap: 4px; margin-top: 8px; }
+.home-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 18rem);
+  align-items: end;
+  justify-items: start;
+  gap: 8px;
+}
+.home-controls .field { width: 100%; min-width: 0; }
+.home-controls button:disabled { opacity: 0.65; cursor: default; }
+@container (min-width: 600px) {
+  .home-controls { grid-template-columns: minmax(0, 18rem) auto; }
+}
 #install-form { display: grid; gap: 4px; margin-top: 8px; }
 .install-controls { display: grid; gap: 8px; justify-items: start; }
 input[type="file"] { width: 100%; min-width: 0; }
@@ -139,13 +157,15 @@ button.danger:not([aria-disabled="true"]):hover { background: var(--react-web-de
 }
 
 input { min-width: 0; color: inherit; font: inherit; accent-color: var(--react-web-desktop-accent); }
-.field input {
+.field input, .field select {
   width: 100%;
   min-height: 36px;
   padding: 4px 8px;
   border: 1px solid var(--react-web-desktop-border);
   border-radius: 6px;
   background: var(--react-web-desktop-surface);
+  color: var(--react-web-desktop-fg);
+  font: inherit;
 }
 .field { display: grid; align-content: start; gap: 4px; }
 .check { display: flex; align-items: center; gap: 8px; min-height: 36px; cursor: pointer; }
@@ -232,7 +252,7 @@ dialog form { display: grid; gap: 8px; }
 
 @media (any-pointer: coarse) {
   button, .button, input[type="file"]::file-selector-button,
-  .field input, summary, .check { min-height: 44px; min-width: 44px; }
+  .field input, .field select, summary, .check { min-height: 44px; min-width: 44px; }
   summary { padding-block: 12px; }
 }
 

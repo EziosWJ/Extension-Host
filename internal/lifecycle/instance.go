@@ -22,11 +22,8 @@ type Instance struct {
 	id         string
 	version    string
 	packageDir string
-	webDir     string
-	webIndex   string
 	luaEntry   string
 	hasLua     bool
-	hasWeb     bool
 	dataDir    string
 	logPath    string
 	config     func() map[string]any
@@ -61,18 +58,12 @@ func newInstance(opts instanceOptions) *Instance {
 		packageDir:    opts.packageDir,
 		luaEntry:      opts.manifest.Entry.Lua,
 		hasLua:        opts.manifest.Entry.Lua != "",
-		hasWeb:        opts.manifest.Entry.Web != "",
 		dataDir:       filepath.Join(opts.pluginDir, "data"),
 		logPath:       opts.logPath,
 		config:        opts.config,
 		services:      opts.services,
 		subscriptions: make(map[*Subscription]chan []byte),
 		done:          make(chan struct{}),
-	}
-	if instance.hasWeb {
-		entry := opts.manifest.Entry.Web
-		instance.webDir = filepath.Join(opts.packageDir, filepath.FromSlash(filepath.Dir(entry)))
-		instance.webIndex = filepath.Base(entry)
 	}
 	return instance
 }
@@ -161,14 +152,6 @@ func (i *Instance) closeLog() {
 
 // HasLua reports whether the plugin exposes a Lua entry.
 func (i *Instance) HasLua() bool { return i.hasLua }
-
-// HasWeb reports whether the plugin exposes a web entry.
-func (i *Instance) HasWeb() bool { return i.hasWeb }
-
-// WebInfo returns the directory and index file for the plugin web entry.
-func (i *Instance) WebInfo() (string, string) {
-	return i.webDir, i.webIndex
-}
 
 // Handle dispatches an HTTP request to the plugin Lua runtime.
 func (i *Instance) Handle(ctx context.Context, request lua.Request) (lua.Response, error) {

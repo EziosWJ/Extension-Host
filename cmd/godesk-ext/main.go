@@ -19,7 +19,6 @@ import (
 
 	"github.com/EziosWJ/Extension-Host/host"
 	"github.com/EziosWJ/Extension-Host/internal/bundle"
-	"github.com/EziosWJ/Extension-Host/web"
 )
 
 func main() {
@@ -48,6 +47,12 @@ func run(ctx context.Context, args []string) error {
 		return validate(args[1:])
 	case "pack":
 		return pack(args[1:])
+	case "init":
+		return initProject(args[1:], os.Stdin, os.Stdout)
+	case "dev":
+		return develop(ctx, args[1:])
+	case "pkg":
+		return packageProject(args[1:])
 	case "help":
 		usage(os.Stdout)
 		return nil
@@ -65,16 +70,22 @@ Usage:
   godesk-ext run <dir|zip> [flags]    Install, enable and serve one plugin
   godesk-ext validate <dir|zip>       Validate a plugin package
   godesk-ext pack <dir> [-o file]     Build a plugin ZIP
+  godesk-ext init                     Create a named plugin project folder
+  godesk-ext dev [flags]              Run the current project and reload on save
+  godesk-ext pkg                     Build the current project into dist/
 
-Serve and run flags:
+Serve, run and dev flags:
   --listen string          HTTP listen address (default "127.0.0.1:5001")
-  --data-dir string        host data directory (default "./godesk-ext-data")
   --service-grants string  JSON file granting plugins access to systemd units
 
+Serve and run only:
+  --data-dir string        host data directory (default "./godesk-ext-data")
+
 Examples:
-  godesk-ext
+  godesk-ext init
+  godesk-ext dev
+  godesk-ext pkg
   godesk-ext pack ./examples/hello -o dist/hello.zip
-  godesk-ext run ./dist/hello.zip
 `)
 }
 
@@ -106,7 +117,7 @@ func serve(ctx context.Context, args []string) error {
 	if err := extensionHost.Restore(ctx); err != nil {
 		slog.Error("restore enabled plugins", "error", err)
 	}
-	return serveHost(ctx, extensionHost, listen, dataDir)
+	return serveHost(ctx, extensionHost, listen, dataDir, nil)
 }
 
 func runPlugin(ctx context.Context, args []string) error {
@@ -172,18 +183,23 @@ func runPlugin(ctx context.Context, args []string) error {
 	if plugin.HasLua {
 		slog.Info("plugin API entry", "url", "http://"+displayAddress(listen)+plugin.APIPath)
 	}
-	return serveHost(ctx, extensionHost, listen, dataDir)
+	return serveHost(ctx, extensionHost, listen, dataDir, nil)
 }
 
-func serveHost(ctx context.Context, extensionHost *host.Host, listen, dataDir string) error {
+func serveHost(ctx context.Context, extensionHost *host.Host, listen, dataDir string, dev *developmentSession) error {
 	listener, err := net.Listen("tcp", listen)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", listen, err)
 	}
 	server := &http.Server{
-		Handler:           combinedHandler(extensionHost.Handler(host.HTTPOptions{}), web.Handler()),
+		Handler:           standaloneHandler(extensionHost, dev),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	stopWatch := func() {}
+	if dev != nil {
+		stopWatch = dev.watch(ctx)
+	}
+	defer stopWatch()
 	serveErr := make(chan error, 1)
 	go func() {
 		serveErr <- server.Serve(listener)
@@ -199,6 +215,7 @@ func serveHost(ctx context.Context, extensionHost *host.Host, listen, dataDir st
 	case <-ctx.Done():
 	}
 
+	stopWatch()
 	closeErr := closeHost(extensionHost)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -282,14 +299,18 @@ func pack(args []string) error {
 	if err != nil {
 		return err
 	}
+	return writePackage(pkg, absoluteTarget)
+}
+
+func writePackage(pkg *bundle.Bundle, target string) error {
 	archive, err := pkg.Zip()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(absoluteTarget), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(absoluteTarget), ".pack-*.zip")
+	temporary, err := os.CreateTemp(filepath.Dir(target), ".pack-*.zip")
 	if err != nil {
 		return fmt.Errorf("create output file: %w", err)
 	}
@@ -305,10 +326,10 @@ func pack(args []string) error {
 	if err := os.Chmod(temporaryName, 0o644); err != nil {
 		return fmt.Errorf("set output permissions: %w", err)
 	}
-	if err := os.Rename(temporaryName, absoluteTarget); err != nil {
+	if err := os.Rename(temporaryName, target); err != nil {
 		return fmt.Errorf("publish output file: %w", err)
 	}
-	fmt.Printf("packed %s (%d bytes)\n", absoluteTarget, len(archive))
+	fmt.Printf("packed %s (%d bytes)\n", target, len(archive))
 	return nil
 }
 
@@ -375,17 +396,6 @@ func loadBundle(name string) (*bundle.Bundle, error) {
 		return nil, fmt.Errorf("read package: %w", err)
 	}
 	return bundle.LoadZip(data)
-}
-
-func combinedHandler(extensions, ui http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		if path == "/api/v1/extensions" || strings.HasPrefix(path, "/api/v1/extensions/") || strings.HasPrefix(path, "/extensions/") {
-			extensions.ServeHTTP(w, r)
-			return
-		}
-		ui.ServeHTTP(w, r)
-	})
 }
 
 func closeHost(extensionHost *host.Host) error {

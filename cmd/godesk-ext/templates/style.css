@@ -1,0 +1,41 @@
+:root {
+  color-scheme: light;
+  --react-web-desktop-surface: #FFFFFF;
+  --react-web-desktop-fg: #242326;
+  --react-web-desktop-accent: #6246B5;
+  --react-web-desktop-on-accent: #FFFFFF;
+  --react-web-desktop-focus: #6246B5;
+  --react-web-desktop-font-ui: "Figtree Variable", "Noto Sans SC Variable", "Microsoft YaHei UI", "PingFang SC", "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --react-web-desktop-surface: #202023;
+    --react-web-desktop-fg: #F3F2F5;
+    --react-web-desktop-accent: #BBA7FA;
+    --react-web-desktop-on-accent: #211A30;
+    --react-web-desktop-focus: #BBA7FA;
+  }
+}
+body {
+  margin: 0;
+  background: var(--react-web-desktop-surface);
+  color: var(--react-web-desktop-fg);
+  font: 0.875rem/1.25rem var(--react-web-desktop-font-ui);
+  overflow-wrap: anywhere;
+}
+main { max-width: 48rem; margin-inline: auto; padding: 16px; }
+h1 { margin: 0 0 12px; font-size: 1.25rem; line-height: 1.75rem; font-weight: 650; }
+button {
+  min-height: 36px;
+  padding: 4px 12px;
+  border: 1px solid var(--react-web-desktop-accent);
+  border-radius: 6px;
+  background: var(--react-web-desktop-accent);
+  color: var(--react-web-desktop-on-accent);
+  font: inherit;
+  cursor: pointer;
+}
+button:disabled { opacity: 0.65; cursor: default; }
+:focus-visible { outline: 2px solid var(--react-web-desktop-focus); outline-offset: 2px; }
+@media (any-pointer: coarse) { button { min-height: 44px; min-width: 44px; } }

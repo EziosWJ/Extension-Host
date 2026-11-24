@@ -11,6 +11,12 @@ const cancelUninstall = document.querySelector("#cancel-uninstall");
 const purge = document.querySelector("#purge");
 const purgeWarning = document.querySelector("#purge-warning");
 const uninstallError = document.querySelector("#uninstall-error");
+const homeForm = document.querySelector("#home-form");
+const homeControls = document.querySelector("#home-controls");
+const homePlugin = document.querySelector("#home-plugin");
+const homeSave = homeForm.querySelector("button");
+const homeHint = document.querySelector("#home-hint");
+const homeStatus = document.querySelector("#home-status");
 
 const statusLabels = {
   stopped: "已停止",
@@ -23,6 +29,8 @@ const statusLabels = {
 const rows = new Map();
 let refreshVersion = 0;
 let uninstalling = null;
+let savedHome = "";
+let savingHome = false;
 
 async function api(path, options = {}) {
   const response = await fetch(path, { cache: "no-store", ...options });
@@ -347,16 +355,77 @@ function render(plugins) {
   }
 }
 
+function renderHome(settings, plugins) {
+  homeControls.hidden = settings.development;
+  if (settings.development) {
+    homeHint.textContent = "开发模式优先打开当前插件的网页。插件没有网页时打开管理页。";
+    return;
+  }
+
+  const draft = homePlugin.value === savedHome ? null : homePlugin.value;
+  savedHome = settings.pluginId;
+  homePlugin.replaceChildren(new Option("宿主管理页", ""));
+  const selected = plugins.find((plugin) => plugin.id === savedHome);
+  for (const plugin of plugins) {
+    if (plugin.enabled && plugin.hasWeb) {
+      homePlugin.add(new Option(`${plugin.name}（${plugin.id}）`, plugin.id));
+    }
+  }
+  if (savedHome && !Array.from(homePlugin.options).some((option) => option.value === savedHome)) {
+    homePlugin.add(new Option(`${selected?.name || savedHome}（当前不可用）`, savedHome));
+  }
+  homePlugin.value = draft !== null && Array.from(homePlugin.options).some((option) => option.value === draft)
+    ? draft : savedHome;
+  homePlugin.disabled = false;
+  homeSave.disabled = false;
+  homeHint.textContent = savedHome && (!selected?.enabled || selected.status !== "running" || !selected.hasWeb)
+    ? "首页插件当前不可用，访问 / 会打开管理页。"
+    : "访问 / 时打开所选页面。";
+}
+
+homeForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (savingHome || homeSave.disabled) return;
+  const selection = homePlugin.value;
+  savingHome = true;
+  setBusy(homeSave, true, "正在保存…");
+  feedback(homeStatus, "");
+  try {
+    await api("/api/v1/host/home", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pluginId: selection }),
+    });
+    savedHome = selection;
+    feedback(homeStatus, "首页已保存。", "success");
+    await refresh(false);
+  } catch (error) {
+    feedback(homeStatus, `无法保存首页：${error.message}`, "error");
+  } finally {
+    savingHome = false;
+    setBusy(homeSave, false, "保存首页");
+  }
+});
+
 async function refresh(clearNotice = true) {
   const version = ++refreshVersion;
   setBusy(refreshButton, true, "正在刷新…");
   feedback(listState, "正在加载插件…");
   try {
-    const data = await api("/api/v1/extensions");
+    const [data, settings] = await Promise.all([
+      api("/api/v1/extensions"),
+      api("/api/v1/host/home").catch((error) => ({ error })),
+    ]);
     if (version !== refreshVersion) return;
     if (clearNotice) feedback(notice, "");
     const plugins = data.plugins || [];
     render(plugins);
+    if (settings.error) {
+      feedback(homeStatus, `无法读取首页设置：${settings.error.message}`, "error");
+    } else {
+      if (clearNotice) feedback(homeStatus, "");
+      renderHome(settings, plugins);
+    }
     feedback(listState, plugins.length ? "" : "还没有安装插件。请选择 ZIP 文件。");
   } catch (error) {
     if (version === refreshVersion) {

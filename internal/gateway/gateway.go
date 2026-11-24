@@ -2,10 +2,12 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"mime"
@@ -36,14 +38,16 @@ type Options struct {
 	// RequireSession wraps every extension route with the embedder's session check.
 	RequireSession func(http.Handler) http.Handler
 	// AllowedOrigins lists extra WebSocket origins for embedded development proxies.
-	AllowedOrigins []string
+	AllowedOrigins      []string
+	DevelopmentRevision func(pluginID string) string
 }
 
 // Gateway serves extension HTTP routes.
 type Gateway struct {
-	manager        *lifecycle.Manager
-	logger         *slog.Logger
-	allowedOrigins []string
+	manager             *lifecycle.Manager
+	logger              *slog.Logger
+	allowedOrigins      []string
+	developmentRevision func(pluginID string) string
 }
 
 // New builds the extension HTTP handler.
@@ -51,7 +55,10 @@ func New(manager *lifecycle.Manager, logger *slog.Logger, opts Options) http.Han
 	if logger == nil {
 		logger = slog.Default()
 	}
-	gateway := &Gateway{manager: manager, logger: logger, allowedOrigins: opts.AllowedOrigins}
+	gateway := &Gateway{
+		manager: manager, logger: logger, allowedOrigins: opts.AllowedOrigins,
+		developmentRevision: opts.DevelopmentRevision,
+	}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/v1/extensions", gateway.list)
@@ -193,6 +200,10 @@ func (g *Gateway) redirectWeb(w http.ResponseWriter, r *http.Request) {
 
 func (g *Gateway) web(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	var revision string
+	if g.developmentRevision != nil {
+		revision = g.developmentRevision(id)
+	}
 	dir, index, err := g.manager.WebInfo(id)
 	if err != nil {
 		g.fail(w, err)
@@ -218,7 +229,33 @@ func (g *Gateway) web(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-cache")
+	if revision != "" {
+		w.Header().Set("Cache-Control", "no-store")
+		switch strings.ToLower(filepath.Ext(target)) {
+		case ".html", ".htm":
+			serveDevelopmentHTML(w, r, target, revision)
+			return
+		}
+	}
 	http.ServeFile(w, r, target)
+}
+
+func serveDevelopmentHTML(w http.ResponseWriter, r *http.Request, target, revision string) {
+	page, err := os.ReadFile(target)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	script := []byte("<script defer src=\"/__godesk_dev/reload.js\" data-revision=\"" + html.EscapeString(revision) + "\"></script>")
+	index := bytes.LastIndex(bytes.ToLower(page), []byte("</body>"))
+	if index == -1 {
+		index = len(page)
+	}
+	content := make([]byte, 0, len(page)+len(script))
+	content = append(content, page[:index]...)
+	content = append(content, script...)
+	content = append(content, page[index:]...)
+	http.ServeContent(w, r, filepath.Base(target), time.Time{}, bytes.NewReader(content))
 }
 
 func (g *Gateway) api(w http.ResponseWriter, r *http.Request) {

@@ -2,7 +2,7 @@
 
 GoDesk 的插件宿主。仓库提供公共 Go 模块、独立命令 `godesk-ext`、最小管理界面和示例插件。
 
-当前完成实施 Spec 的工单 01（独立运行闭环）、工单 02（GoDesk 嵌入），以及工单 03 的宿主侧共享 systemd 能力与 `host.services` 授权；GoDesk 原生服务管理的接入随 v0.2.0 发布。Mihomo 插件和完整开发命令由工单 04–05 跟踪。另提供 [PostgreSQL 备份示例](examples/postgres-backup/README.md)，用于验收 Lua 命令执行和同一 ZIP 的双模式行为。
+当前完成实施 Spec 的工单 01（独立运行闭环）、工单 02（GoDesk 嵌入），以及工单 03 的宿主侧共享 systemd 能力与 `host.services` 授权。GoDesk 原生服务管理的接入随 v0.2.0 发布。`godesk-ext` 支持从模板创建、保存后自动更新和打包。Mihomo 插件与通用自动测试仍由工单 04–05 跟踪。另提供 [PostgreSQL 备份示例](examples/postgres-backup/README.md)，用于验收 Lua 命令执行和同一 ZIP 的双模式行为。
 
 - 共享契约：[GoDesk 插件首版契约](https://github.com/EziosWJ/GoDesk/blob/main/docs/extensions.md)
 - 前端设计：[Extension Host 与插件前端设计规范](docs/frontend-design.md)
@@ -41,7 +41,7 @@ make examples
 ./bin/godesk-ext --data-dir ./godesk-ext-data
 ```
 
-打开 <http://127.0.0.1:5001/>，安装 `dist/com.godesk.hello-0.1.0.zip`，然后点击“启用”。插件页面会通过原生 `fetch` 调用 Lua，通过 WebSocket 接收事件，并把访问次数写入自己的 SQLite。
+打开 <http://127.0.0.1:5001/host/>，安装 `dist/com.godesk.hello-0.1.0.zip`，然后点击“启用”。插件页面会通过原生 `fetch` 调用 Lua，通过 WebSocket 接收事件，并把访问次数写入自己的 SQLite。
 
 也可以直接运行源码目录或 ZIP：
 
@@ -52,6 +52,34 @@ make examples
 
 `run` 会安装、启用并启动指定插件，然后提供管理页。若同一 ID 已安装，会先卸载再重新安装：业务数据默认保留，插件配置恢复为 Manifest 默认值。
 
+## 开发一个插件
+
+安装已发布版本时，将下面的 `<版本标签>` 换成包含这些命令的标签。开发当前源码时，可在本仓库运行 `GOWORK=off CGO_ENABLED=0 go install ./cmd/godesk-ext`。确保 Go 的二进制安装目录在 `PATH` 中。
+
+```sh
+CGO_ENABLED=0 go install github.com/EziosWJ/Extension-Host/cmd/godesk-ext@<版本标签>
+```
+
+```sh
+godesk-ext init  # 插件名称填写 my-plugin
+cd my-plugin
+godesk-ext dev
+```
+
+`init` 提供「网页 + Lua」「只有网页」「只有 Lua」三种模板。填写插件名称和标识后，工具会在当前目录下创建以插件名称命名的文件夹。生成的 `README.md` 说明各文件的用途和验证方法。项目使用原生网页和 Lua，安装命令后可以直接开始。
+
+打开 `dev` 输出的地址，插件会自动安装并启用。访问 `/` 时，有网页就打开插件，否则打开 `/host/`。保存网页资源后浏览器自动刷新。Lua 或 `manifest.json` 变动后，宿主检查文件并重启插件。更新失败会在终端显示原因，之前能运行的版本会继续提供服务或被重新启动。修改插件标识后重新运行 `dev`。
+
+开发用的设置、业务数据和日志保存在项目的 `.godesk-ext/`。它们在重新运行 `dev` 后仍可使用，日志在 `.godesk-ext/logs/`。普通运行时，可在 `/host/` 的「宿主首页」中选择已启用的网页插件。宿主重启后会保留选择，插件暂时不可用时访问 `/` 会打开管理页。
+
+在项目根目录另开终端打包：
+
+```sh
+godesk-ext pkg
+```
+
+ZIP 位于 `dist/<插件标识>-<版本>.zip`，内容来自项目根目录的 `manifest.json`、`web/` 和 `lua/`。在 GoDesk 的「扩展」或独立宿主的 `/host/` 中安装同一个 ZIP，启用后验证页面或 Lua 接口。
+
 ## 命令
 
 | 命令 | 行为 |
@@ -60,8 +88,11 @@ make examples
 | `godesk-ext run <dir\|zip>` | 安装、启用并运行一个插件，然后启动宿主。参数同上。 |
 | `godesk-ext validate <dir\|zip>` | 校验 Manifest、入口、Host API 兼容性和包路径。 |
 | `godesk-ext pack <dir> [-o file]` | 校验后打包。默认输出 `dist/<id>-<version>.zip`。 |
+| `godesk-ext init` | 选择模板，并在当前目录下创建以插件名称命名的项目文件夹。 |
+| `godesk-ext dev` | 自动安装并启用当前目录的插件，保存文件后更新。支持 `--listen`、`--service-grants`。 |
+| `godesk-ext pkg` | 校验当前项目并把运行文件打包到 `dist/<id>-<version>.zip`。 |
 
-参数可以放在位置参数前后。默认数据目录是 `./godesk-ext-data`。
+参数可以放在位置参数前后。`serve` 和 `run` 默认使用 `./godesk-ext-data`，`dev` 使用项目的 `.godesk-ext/`。
 
 ## 插件包
 
@@ -341,4 +372,4 @@ make check
 | 02 | GoDesk 嵌入并通过拆分验收（已完成） |
 | 03 | 抽取共享 systemd 能力（宿主侧已完成，GoDesk 接入随 v0.2.0） |
 | 04 | 交付双模式 Mihomo 插件 |
-| 05 | 交付独立开发与测试流程（`dev`、`logs`、`test` 等） |
+| 05 | 独立开发与测试流程（已支持 `dev`，`logs` 与 `test` 待交付） |

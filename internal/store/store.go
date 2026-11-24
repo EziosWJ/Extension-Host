@@ -21,6 +21,7 @@ type Plugin struct {
 	Config      map[string]any
 	Enabled     bool
 	InstalledAt time.Time
+	DevPackage  string
 }
 
 // Store owns host.db.
@@ -52,6 +53,14 @@ CREATE TABLE IF NOT EXISTS plugins (
 	config TEXT NOT NULL DEFAULT '{}',
 	enabled INTEGER NOT NULL DEFAULT 0,
 	installed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS development_packages (
+	plugin_id TEXT PRIMARY KEY,
+	directory TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS host_settings (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
 );`
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize host database: %w", err)
@@ -66,7 +75,7 @@ func (s *Store) Close() error {
 
 // ListPlugins returns all installed plugins ordered by name.
 func (s *Store) ListPlugins(ctx context.Context) ([]Plugin, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, version, manifest, config, enabled, installed_at FROM plugins ORDER BY name, id`)
+	rows, err := s.db.QueryContext(ctx, pluginQuery+` ORDER BY name, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list plugins: %w", err)
 	}
@@ -88,7 +97,7 @@ func (s *Store) ListPlugins(ctx context.Context) ([]Plugin, error) {
 
 // GetPlugin returns one plugin.
 func (s *Store) GetPlugin(ctx context.Context, id string) (Plugin, bool, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, name, version, manifest, config, enabled, installed_at FROM plugins WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, pluginQuery+` WHERE id = ?`, id)
 	plugin, err := scanPlugin(row)
 	if err == sql.ErrNoRows {
 		return Plugin{}, false, nil
@@ -97,6 +106,51 @@ func (s *Store) GetPlugin(ctx context.Context, id string) (Plugin, bool, error) 
 		return Plugin{}, false, err
 	}
 	return plugin, true, nil
+}
+
+const pluginQuery = `SELECT id, name, version, manifest, config, enabled, installed_at,
+	COALESCE(directory, '') FROM plugins LEFT JOIN development_packages ON plugin_id = id`
+
+// SetDevelopmentPackage commits the new files and metadata together.
+func (s *Store) SetDevelopmentPackage(ctx context.Context, plugin Plugin) error {
+	config, err := json.Marshal(plugin.Config)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx,
+		`UPDATE plugins SET name = ?, version = ?, manifest = ?, config = ?, enabled = ? WHERE id = ?`,
+		plugin.Name, plugin.Version, string(plugin.Manifest), string(config), plugin.Enabled, plugin.ID)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO development_packages (plugin_id, directory) VALUES (?, ?)
+		ON CONFLICT(plugin_id) DO UPDATE SET directory = excluded.directory`, plugin.ID, plugin.DevPackage)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// HomePlugin returns the saved standalone home plugin ID. An empty ID means the management page.
+func (s *Store) HomePlugin(ctx context.Context) (string, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM host_settings WHERE key = 'home_plugin'`).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return id, err
+}
+
+// SetHomePlugin saves the standalone home plugin.
+func (s *Store) SetHomePlugin(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO host_settings (key, value) VALUES ('home_plugin', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, id)
+	return err
 }
 
 // InsertPlugin records a new installation.
@@ -153,10 +207,18 @@ func (s *Store) SetConfig(ctx context.Context, id string, config map[string]any)
 
 // DeletePlugin removes an installation record.
 func (s *Store) DeletePlugin(ctx context.Context, id string) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM plugins WHERE id = ?`, id); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM development_packages WHERE plugin_id = ?`, id); err != nil {
+		return fmt.Errorf("delete development package: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM plugins WHERE id = ?`, id); err != nil {
 		return fmt.Errorf("delete plugin: %w", err)
 	}
-	return nil
+	return tx.Commit()
 }
 
 type scanner interface {
@@ -171,7 +233,7 @@ func scanPlugin(row scanner) (Plugin, error) {
 		installedAt string
 		enabled     int
 	)
-	if err := row.Scan(&plugin.ID, &plugin.Name, &plugin.Version, &manifestRaw, &configRaw, &enabled, &installedAt); err != nil {
+	if err := row.Scan(&plugin.ID, &plugin.Name, &plugin.Version, &manifestRaw, &configRaw, &enabled, &installedAt, &plugin.DevPackage); err != nil {
 		if err == sql.ErrNoRows {
 			return Plugin{}, err
 		}

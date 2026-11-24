@@ -26,6 +26,23 @@
       </form>
     </section>
 
+    <section class="home-settings" aria-labelledby="home-title">
+      <h2 id="home-title">宿主首页</h2>
+      <form id="home-form">
+        <div id="home-controls" class="home-controls">
+          <label class="field">
+            首页插件
+            <select id="home-plugin" aria-describedby="home-hint" disabled>
+              <option value="">宿主管理页</option>
+            </select>
+          </label>
+          <button type="submit" disabled>保存首页</button>
+        </div>
+        <p id="home-hint" class="caption"></p>
+        <p id="home-status" class="feedback" role="status"></p>
+      </form>
+    </section>
+
     <p id="notice" class="feedback" role="status"></p>
 
     <section aria-labelledby="list-title">

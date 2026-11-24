@@ -1,4 +1,6 @@
 const apiRoot = new URL("../api/", location.href);
+const eventsURL = new URL("../events", location.href);
+eventsURL.protocol = location.protocol === "https:" ? "wss:" : "ws:";
 const connection = document.querySelector("#connection");
 const form = document.querySelector("#connection-form");
 const fields = form.querySelector("fieldset");
@@ -12,6 +14,7 @@ const backup = document.querySelector("#submit");
 const target = document.querySelector("#target");
 const backupState = document.querySelector("#backup-state");
 const historyState = document.querySelector("#history-state");
+const refreshHistory = document.querySelector("#refresh-history");
 const list = document.querySelector("#jobs");
 const template = document.querySelector("#job");
 const labels = { running: "运行中", succeeded: "成功", failed: "失败" };
@@ -23,11 +26,15 @@ let configured = null;
 let configuredTarget = "";
 let targetStale = true;
 let refreshing = null;
+let refreshQueued = false;
 let initialHistoryLoaded = false;
 let submitting = false;
 let saving = false;
 let connectionLoaded = false;
 let submitError = "";
+let eventsSocket = null;
+let reconnectTimer;
+let reconnectDelay = 1000;
 
 async function request(path, method = "GET", body) {
   const options = { method, cache: "no-store" };
@@ -52,6 +59,7 @@ function renderControls() {
   const running = jobs.find((job) => job.status === "running");
   const blocked = !configured || targetStale || Boolean(refreshing) || submitting || saving || Boolean(running);
   backup.setAttribute("aria-disabled", String(blocked));
+  refreshHistory.setAttribute("aria-disabled", String(Boolean(refreshing) || saving || submitting));
   save.setAttribute("aria-disabled", String(fields.disabled || submitting));
   backup.classList.toggle("primary", configured === true);
   const label = submitting ? "正在提交…" : running ? "备份运行中" : "立即备份";
@@ -93,7 +101,11 @@ function renderHistory() {
 }
 
 function refresh() {
-  if (refreshing || saving || submitting) return refreshing;
+  if (refreshing || saving || submitting) {
+    refreshQueued = true;
+    return refreshing;
+  }
+  refreshQueued = false;
   refreshing = (async () => {
     try {
       const data = await request("backups");
@@ -110,16 +122,43 @@ function refresh() {
     } catch (error) {
       if (saving) return;
       targetStale = true;
-      target.textContent = "无法确认备份目标，正在重试。";
+      target.textContent = "无法确认备份目标，请刷新历史。";
       feedback(historyState, `无法刷新备份历史：${error.message}`, true);
     } finally {
       refreshing = null;
-      renderControls();
+      if (refreshQueued && !saving && !submitting) {
+        void refresh();
+      } else {
+        renderControls();
+      }
     }
   })();
   renderControls();
   return refreshing;
 }
+
+function connectEvents() {
+  const socket = new WebSocket(eventsURL);
+  eventsSocket = socket;
+  socket.addEventListener("open", () => {
+    reconnectDelay = 1000;
+    // The snapshot also picks up changes made while the event stream was disconnected.
+    void refresh();
+  });
+  socket.addEventListener("message", ({ data }) => {
+    if (JSON.parse(data).event === "backups-changed") void refresh();
+  });
+  socket.addEventListener("close", () => {
+    if (eventsSocket !== socket) return;
+    eventsSocket = null;
+    reconnectTimer = setTimeout(connectEvents, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+  });
+}
+
+refreshHistory.addEventListener("click", () => {
+  if (refreshHistory.getAttribute("aria-disabled") !== "true") void refresh();
+});
 
 backup.addEventListener("click", async () => {
   if (backup.getAttribute("aria-disabled") === "true") return;
@@ -208,4 +247,13 @@ form.addEventListener("submit", async (event) => {
 
 void loadConnection();
 void refresh();
-window.setInterval(refresh, 1500);
+connectEvents();
+window.addEventListener("pagehide", () => {
+  clearTimeout(reconnectTimer);
+  const socket = eventsSocket;
+  eventsSocket = null;
+  socket?.close();
+});
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) connectEvents();
+});

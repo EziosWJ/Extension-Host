@@ -64,6 +64,7 @@ host.app.route("PUT", "/connection", function(request)
     password = password,
   }
   host.storage.set("connection", host.json.encode(connection))
+  host.app.emit("backups-changed", {})
   return response(200, public_connection(connection))
 end)
 
@@ -97,6 +98,7 @@ local function finish(id, file_name, message)
   else
     host.storage.exec("UPDATE backups SET status = 'succeeded', file_name = ? WHERE id = ?", { file_name, id })
   end
+  host.app.emit("backups-changed", {})
 end
 
 local function archive_paths(id)
@@ -189,5 +191,6 @@ host.app.route("POST", "/backups", function()
     finish(id, nil, "无法启动 pg_dump：" .. err)
     return response(200, task(id))
   end
+  host.app.emit("backups-changed", {})
   return response(202, task(id))
 end)

@@ -7,6 +7,7 @@ local json_headers = {
   ["cache-control"] = "no-store",
 }
 local fields = "id, target, status, started_at AS startedAt, file_name AS fileName, error"
+local schedule_error
 
 local function response(status, data)
   return { status = status, headers = json_headers, body = host.json.encode(data) }
@@ -125,6 +126,63 @@ local function finish_dump(id, name, final, partial, result)
   finish(id, name, message)
 end
 
+local function start_backup()
+  local running = host.storage.query("SELECT " .. fields .. " FROM backups WHERE status = 'running' LIMIT 1")[1]
+  if running then
+    return { status = 202, body = running }
+  end
+
+  local target, env = backup_target()
+  if target == "" then
+    return { status = 503, body = { error = "请先保存数据库连接。" } }
+  end
+
+  local source = io.open("/proc/sys/kernel/random/uuid", "r")
+  if not source then
+    return { status = 500, body = { error = "无法生成任务 ID。" } }
+  end
+  local id = source:read("*l")
+  source:close()
+  if not id then
+    return { status = 500, body = { error = "无法生成任务 ID。" } }
+  end
+
+  host.storage.exec(
+    "INSERT INTO backups (id, target, status, started_at) VALUES (?, ?, 'running', ?)",
+    { id, target, now() }
+  )
+  local name, final, partial = archive_paths(id)
+  local pid, err = host.process.start("pg_dump", { "--format=custom", "--no-password", "--file", partial }, function(result)
+    finish_dump(id, name, final, partial, result)
+  end, env)
+  if not pid then
+    finish(id, nil, "无法启动 pg_dump：" .. err)
+    return { status = 200, body = task(id) }
+  end
+  host.app.emit("backups-changed", {})
+  return { status = 202, body = task(id) }
+end
+
+local function saved_schedule()
+  return host.storage.get("schedule") or ""
+end
+
+local function scheduled_backup()
+  local result = start_backup()
+  -- 202 表示已开始或已有正在运行的备份；200 表示 pg_dump 启动失败，必须写入宿主日志。
+  if result.status == 202 then
+    return
+  end
+  error(result.body and result.body.error or "定时备份启动失败。")
+end
+
+local function register_backup_schedule(expression)
+  if not host.schedule then
+    return nil, "当前 Extension Host 不支持定时任务。"
+  end
+  return host.schedule.register("backup", expression, scheduled_backup)
+end
+
 host.app.on("start", function()
   host.storage.exec([[
     CREATE TABLE IF NOT EXISTS backups (
@@ -147,6 +205,17 @@ host.app.on("start", function()
       finish(job.id, nil, "备份在插件停止时中断。")
     end
   end
+
+  schedule_error = nil
+  local expression = saved_schedule()
+  if expression ~= "" then
+    local ok, registered, err = pcall(register_backup_schedule, expression)
+    if not ok then
+      schedule_error = tostring(registered)
+    elseif not registered then
+      schedule_error = tostring(err or "无法注册定时备份。")
+    end
+  end
 end)
 
 host.app.route("GET", "/backups", function()
@@ -159,38 +228,36 @@ host.app.route("GET", "/backups", function()
 end)
 
 host.app.route("POST", "/backups", function()
-  local running = host.storage.query("SELECT " .. fields .. " FROM backups WHERE status = 'running' LIMIT 1")[1]
-  if running then
-    return response(202, running)
-  end
+  local result = start_backup()
+  return response(result.status, result.body)
+end)
 
-  local target, env = backup_target()
-  if target == "" then
-    return response(503, { error = "请先保存数据库连接。" })
-  end
+host.app.route("GET", "/schedule", function()
+  return response(200, { expression = saved_schedule(), error = schedule_error })
+end)
 
-  local source = io.open("/proc/sys/kernel/random/uuid", "r")
-  if not source then
-    return response(500, { error = "无法生成任务 ID。" })
+host.app.route("PUT", "/schedule", function(request)
+  local ok, input = pcall(host.json.decode, request.body)
+  if not ok or type(input) ~= "table" then
+    return response(400, { error = "无法读取备份计划。" })
   end
-  local id = source:read("*l")
-  source:close()
-  if not id then
-    return response(500, { error = "无法生成任务 ID。" })
+  if type(input.expression) ~= "string" or input.expression:find("%z") then
+    return response(400, { error = "备份计划格式无效。" })
   end
-
-  host.storage.exec(
-    "INSERT INTO backups (id, target, status, started_at) VALUES (?, ?, 'running', ?)",
-    { id, target, now() }
-  )
-  local name, final, partial = archive_paths(id)
-  local pid, err = host.process.start("pg_dump", { "--format=custom", "--no-password", "--file", partial }, function(result)
-    finish_dump(id, name, final, partial, result)
-  end, env)
-  if not pid then
-    finish(id, nil, "无法启动 pg_dump：" .. err)
-    return response(200, task(id))
+  local expression = input.expression:match("^%s*(.-)%s*$")
+  if expression == "" then
+    if host.schedule then
+      host.schedule.unregister("backup")
+    end
+    host.storage.delete("schedule")
+    schedule_error = nil
+    return response(200, { expression = "" })
   end
-  host.app.emit("backups-changed", {})
-  return response(202, task(id))
+  local registered, err = register_backup_schedule(expression)
+  if not registered then
+    return response(400, { error = err or "无法保存备份计划。" })
+  end
+  host.storage.set("schedule", expression)
+  schedule_error = nil
+  return response(200, { expression = expression })
 end)

@@ -15,6 +15,7 @@ import (
 	glua "github.com/yuin/gopher-lua"
 
 	"github.com/EziosWJ/Extension-Host/hostsys/services"
+	"github.com/EziosWJ/Extension-Host/internal/schedule"
 	"github.com/EziosWJ/Extension-Host/internal/store"
 )
 
@@ -81,6 +82,10 @@ type Runtime struct {
 	processExits chan processExit
 	processes    sync.WaitGroup
 
+	scheduler     *schedule.Scheduler
+	schedules     map[string]*scheduleEntry
+	scheduleFires chan scheduleFire
+
 	startMu sync.Mutex
 	started bool
 	stop    sync.Once
@@ -120,19 +125,21 @@ func New(opts Options) *Runtime {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Runtime{
-		opts:         opts,
-		entryDir:     filepath.Dir(opts.EntryPath),
-		ctx:          ctx,
-		cancel:       cancel,
-		cmds:         make(chan command),
-		ready:        make(chan error, 1),
-		done:         make(chan struct{}),
-		processExits: make(chan processExit),
-		routes:       make(map[string]*glua.LFunction),
-		routeMethods: make(map[string]map[string]bool),
-		hooks:        make(map[string]*glua.LFunction),
-		modules:      make(map[string]glua.LValue),
-		loading:      make(map[string]bool),
+		opts:          opts,
+		entryDir:      filepath.Dir(opts.EntryPath),
+		ctx:           ctx,
+		cancel:        cancel,
+		cmds:          make(chan command),
+		ready:         make(chan error, 1),
+		done:          make(chan struct{}),
+		processExits:  make(chan processExit),
+		schedules:     make(map[string]*scheduleEntry),
+		scheduleFires: make(chan scheduleFire),
+		routes:        make(map[string]*glua.LFunction),
+		routeMethods:  make(map[string]map[string]bool),
+		hooks:         make(map[string]*glua.LFunction),
+		modules:       make(map[string]glua.LValue),
+		loading:       make(map[string]bool),
 	}
 }
 
@@ -222,6 +229,10 @@ func (r *Runtime) loop() {
 	defer close(r.done)
 	defer func() {
 		r.cancel()
+		r.clearSchedules()
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		r.scheduler.Stop(stopCtx)
 		r.processes.Wait()
 	}()
 	L := glua.NewState(glua.Options{SkipOpenLibs: true})
@@ -230,6 +241,8 @@ func (r *Runtime) loop() {
 	defer cancel()
 	r.cancelExecution = cancel
 	L.SetContext(execution)
+
+	r.scheduler = schedule.New(r.opts.Logger)
 
 	if err := r.setup(L); err != nil {
 		r.ready <- err
@@ -257,6 +270,12 @@ func (r *Runtime) loop() {
 			return
 		case exit := <-r.processExits:
 			r.reportProcessExit(L, exit)
+			if r.exitRequested {
+				r.stopAfterExit(L)
+				return
+			}
+		case fire := <-r.scheduleFires:
+			r.handleScheduleFire(L, fire)
 			if r.exitRequested {
 				r.stopAfterExit(L)
 				return

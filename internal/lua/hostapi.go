@@ -48,6 +48,7 @@ func (r *Runtime) setup(L *glua.LState) error {
 	host.RawSetString("app", r.appModule(L))
 	host.RawSetString("storage", r.storageModule(L))
 	host.RawSetString("process", r.processModule(L))
+	host.RawSetString("schedule", r.scheduleModule(L))
 	host.RawSetString("config", r.configModule(L))
 	host.RawSetString("json", r.jsonModule(L))
 	host.RawSetString("http", unavailableModule(L, "host.http", "request"))

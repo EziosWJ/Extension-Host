@@ -21,7 +21,7 @@ examples: build ## 打包示例插件
 	$(BIN) pack ./examples/web-only -o $(DIST)/com.godesk.webonly-0.1.0.zip
 	$(BIN) pack ./examples/lua-only -o $(DIST)/com.godesk.luaonly-0.1.0.zip
 	$(BIN) pack ./examples/services -o $(DIST)/com.godesk.services-0.1.0.zip
-	$(BIN) pack ./examples/postgres-backup/plugin -o $(DIST)/com.godesk.postgres-backup-0.3.1.zip
+	$(BIN) pack ./examples/postgres-backup/plugin -o $(DIST)/com.godesk.postgres-backup-0.4.0.zip
 
 run: build ## 运行 Hello 示例
 	$(BIN) run ./examples/hello --data-dir ./godesk-ext-data

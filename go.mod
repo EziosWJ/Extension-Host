@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/coder/websocket v1.8.15
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/yuin/gopher-lua v1.1.2
 	modernc.org/sqlite v1.63.0
 )

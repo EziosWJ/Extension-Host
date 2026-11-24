@@ -155,6 +155,8 @@ input { min-width: 0; accent-color: var(--react-web-desktop-accent); }
   color: var(--react-web-desktop-fg);
   font: 0.875rem/1.25rem var(--react-web-desktop-font-ui);
 }
+#schedule .connection-fields { grid-template-columns: minmax(0, 1fr); }
+.hint { margin-top: 8px; color: var(--react-web-desktop-muted); font-size: 0.75rem; line-height: 1rem; }
 .check { display: flex; align-items: center; gap: 8px; min-height: 36px; cursor: pointer; }
 .check input { flex: none; margin: 0; width: 16px; height: 16px; }
 

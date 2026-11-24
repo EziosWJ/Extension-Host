@@ -20,6 +20,7 @@ GoDesk 的插件宿主。仓库提供公共 Go 模块、独立命令 `godesk-ext
 - 配置持久化；标记为 `secret` 的值不出现在管理响应和宿主日志中。
 - 无效包、缺失入口、不兼容 Host API、未获授权的 Host 调用返回明确错误。
 - `host.services` 通过共享的 `hostsys/services` 后端提供 `list`、`get`、`restart`，按部署者的 `--service-grants` 配置逐插件授权。
+- 插件可通过 `host.schedule` 按 cron 表达式或 `@every` 注册定时任务，回调在插件实例的 Lua goroutine 上串行执行。
 - `host.http`、`host.ws` 尚未实现，始终返回明确的“未授权”错误。
 
 ## 构建
@@ -184,6 +185,26 @@ end)
 - 完成回调和 HTTP 处理器在同一个 Lua 实例中串行运行。结果包含 `pid`、`exitCode`、`stderr`，等待出错时还包含 `error`。标准输出默认丢弃，标准错误最多保留开头 64 KiB，截断时提供 `stderrTruncated`。
 - 停止插件会终止其子进程。退出后由插件在下次启动时恢复自己的业务状态。
 
+### `host.schedule`
+
+```lua
+local ok, err = host.schedule.register("nightly-backup", "0 3 * * *", function()
+  host.process.start("pg_dump", {"--format=custom", "--file", host.dataDir .. "/backup.dump"}, function(result)
+    print(result.exitCode, result.stderr)
+  end)
+end)
+
+host.schedule.unregister("nightly-backup")  -- 已移除时为 true，否则为 false
+```
+
+- `register(name, expression, fn)` 注册或替换同名任务，成功返回 `true`；名称留空、参数类型错误或表达式无效时返回 `nil, error`，不会抛出错误。名称按插件实例隔离，同名注册会替换旧任务。
+- `expression` 使用标准 5 段 cron（分 时 日 月 周）或 `@every <duration>`（例如 `@every 30m`），按宿主进程的本地时区解释。
+- 回调在插件实例的串行 Lua goroutine 上执行，与 HTTP 处理器、生命周期钩子和进程回调不会并发。回调必须尽快返回；耗时工作应在 `host.process` 中启动。
+- 同一任务上一次调用仍在排队或运行时，新的触发会被跳过并写入警告日志。
+- 回调出错时写入错误日志，不重试。
+- `unregister(name)` 移除任务，存在并移除时返回 `true`，否则返回 `false`。
+- 注册只在插件实例运行期间有效。宿主重启后 Lua 状态会重建，插件需要在启动钩子中按自己持久化的设置重新注册；宿主停止期间错过的执行不会补跑。
+
 ### `host.storage`
 
 ```lua
@@ -221,6 +242,7 @@ local text = host.json.encode(payload)
 | `host.http.request` | 尚未实现，调用返回 `host.http.request is not authorized`。 |
 | `host.ws.subscribe` | 尚未实现，调用返回 `host.ws.subscribe is not authorized`。 |
 | `host.services.list/get/restart` | 按部署授权访问 systemd 服务；未授权时返回明确错误。详见下一节。 |
+| `host.schedule.register/unregister` | 注册和移除实例内的定时任务；详见上文 `host.schedule` 一节。 |
 
 ### 标准库和 `require`
 

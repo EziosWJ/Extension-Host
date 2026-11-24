@@ -41,6 +41,21 @@
       </form>
     </details>
 
+    <details id="schedule">
+      <summary>备份计划</summary>
+      <form id="schedule-form">
+        <fieldset disabled>
+          <div class="connection-fields">
+            <label>计划表达式<input name="expression" placeholder="0 2 * * * 或 @every 24h"></label>
+          </div>
+          <p class="hint">使用标准 5 段 cron（分 时 日 月 周）或 @every（例如 @every 24h），按本地时区执行；留空表示停用定时备份。</p>
+        </fieldset>
+        <button id="save-schedule" type="submit" class="primary" aria-disabled="true">保存计划</button>
+        <button id="retry-schedule" type="button" hidden>重新读取备份计划</button>
+        <p id="schedule-notice" class="feedback" role="status"></p>
+      </form>
+    </details>
+
     <section class="history" aria-labelledby="history-title">
       <div class="history-head">
         <h2 id="history-title">备份历史</h2>

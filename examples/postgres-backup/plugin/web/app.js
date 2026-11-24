@@ -7,6 +7,13 @@ const fields = form.querySelector("fieldset");
 const save = document.querySelector("#save-connection");
 const retry = document.querySelector("#retry-connection");
 const connectionNotice = document.querySelector("#connection-notice");
+const scheduleDetails = document.querySelector("#schedule");
+const scheduleForm = document.querySelector("#schedule-form");
+const scheduleFields = scheduleForm.querySelector("fieldset");
+const scheduleExpression = scheduleForm.elements.namedItem("expression");
+const saveSchedule = document.querySelector("#save-schedule");
+const retrySchedule = document.querySelector("#retry-schedule");
+const scheduleNotice = document.querySelector("#schedule-notice");
 const clearPassword = form.elements.namedItem("clearPassword");
 const password = form.elements.namedItem("password");
 const connectionFields = ["host", "port", "database", "username"];
@@ -31,6 +38,8 @@ let initialHistoryLoaded = false;
 let submitting = false;
 let saving = false;
 let connectionLoaded = false;
+let scheduleLoaded = false;
+let savingSchedule = false;
 let submitError = "";
 let eventsSocket = null;
 let reconnectTimer;
@@ -202,10 +211,33 @@ async function loadConnection() {
   }
 }
 
+async function loadSchedule() {
+  retrySchedule.hidden = true;
+  feedback(scheduleNotice, "正在读取备份计划…");
+  try {
+    const data = await request("schedule");
+    scheduleExpression.value = data.expression || "";
+    scheduleLoaded = true;
+    scheduleFields.disabled = false;
+    saveSchedule.setAttribute("aria-disabled", "false");
+    if (data.error) {
+      scheduleDetails.open = true;
+      feedback(scheduleNotice, data.error, true);
+    } else {
+      feedback(scheduleNotice, data.expression ? "" : "未启用定时备份。");
+    }
+  } catch (error) {
+    scheduleDetails.open = true;
+    feedback(scheduleNotice, `无法读取备份计划：${error.message}`, true);
+    retrySchedule.hidden = false;
+  }
+}
+
 clearPassword.addEventListener("change", () => {
   password.disabled = clearPassword.checked;
 });
 retry.addEventListener("click", loadConnection);
+retrySchedule.addEventListener("click", loadSchedule);
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -245,7 +277,31 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
+scheduleForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!scheduleLoaded || scheduleFields.disabled || savingSchedule) return;
+  savingSchedule = true;
+  scheduleFields.disabled = true;
+  saveSchedule.setAttribute("aria-disabled", "true");
+  saveSchedule.textContent = "正在保存…";
+  feedback(scheduleNotice, "正在保存备份计划…");
+  try {
+    const data = await request("schedule", "PUT", { expression: scheduleExpression.value.trim() });
+    scheduleExpression.value = data.expression || "";
+    retrySchedule.hidden = true;
+    feedback(scheduleNotice, "备份计划已保存。");
+  } catch (error) {
+    feedback(scheduleNotice, `保存备份计划失败：${error.message}`, true);
+  } finally {
+    savingSchedule = false;
+    scheduleFields.disabled = false;
+    saveSchedule.setAttribute("aria-disabled", "false");
+    saveSchedule.textContent = "保存计划";
+  }
+});
+
 void loadConnection();
+void loadSchedule();
 void refresh();
 connectEvents();
 window.addEventListener("pagehide", () => {

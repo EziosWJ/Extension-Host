@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Services Extension</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">GoDesk Extension</p>
+      <h1>Systemd 服务</h1>
+      <p class="lede">这个页面通过 <code>host.services</code> 读取和重启部署者授权的 systemd 单元。未授权的单元和操作会被宿主拒绝。</p>
+    </header>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>已授权服务</h2>
+        <button id="refresh" type="button" class="ghost">刷新列表</button>
+      </div>
+      <p id="list-status" class="muted">尚未加载。</p>
+      <div class="table-wrap">
+        <table id="services">
+          <thead>
+            <tr><th>单元</th><th>说明</th><th>状态</th><th>开机</th><th>操作</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>单元操作</h2>
+        <span class="muted">输入列表中出现的单元名</span>
+      </div>
+      <div class="unit-row">
+        <input id="unit" type="text" placeholder="例如 ssh.service" autocomplete="off">
+        <button id="detail" type="button">查看详情</button>
+        <button id="restart" type="button" class="danger">重启</button>
+      </div>
+      <pre id="output" class="output">等待操作…</pre>
+    </section>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>

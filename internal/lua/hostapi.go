@@ -3,6 +3,8 @@ package lua
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 
 	glua "github.com/yuin/gopher-lua"
 
+	"github.com/EziosWJ/Extension-Host/hostsys/services"
 	"github.com/EziosWJ/Extension-Host/internal/store"
 )
 
@@ -39,7 +42,11 @@ func (r *Runtime) setup(L *glua.LState) error {
 	host.RawSetString("json", r.jsonModule(L))
 	host.RawSetString("http", unavailableModule(L, "host.http", "request"))
 	host.RawSetString("ws", unavailableModule(L, "host.ws", "subscribe"))
-	host.RawSetString("services", unavailableServices(L))
+	if r.opts.Services != nil {
+		host.RawSetString("services", r.servicesModule(L))
+	} else {
+		host.RawSetString("services", unavailableServices(L))
+	}
 	L.SetGlobal("host", host)
 	return nil
 }
@@ -173,7 +180,7 @@ func (r *Runtime) storageModule(L *glua.LState) *glua.LTable {
 			L.RaiseError("host.storage.query: %v", err)
 			return 0
 		}
-		rows := L.NewTable()
+		rows := newArrayTable(L)
 		for _, row := range result.Rows {
 			rowTable := L.NewTable()
 			for i, column := range result.Columns {
@@ -270,6 +277,119 @@ func (r *Runtime) jsonModule(L *glua.LState) *glua.LTable {
 		return 1
 	}))
 	return module
+}
+
+func (r *Runtime) servicesModule(L *glua.LState) *glua.LTable {
+	options := r.opts.Services
+	module := L.NewTable()
+	module.RawSetString("list", L.NewFunction(func(L *glua.LState) int {
+		granted := false
+		for _, permissions := range options.Units {
+			if permissions.List {
+				granted = true
+				break
+			}
+		}
+		if !granted {
+			L.RaiseError("host.services.list is not authorized: no service grant is configured")
+			return 0
+		}
+		items, err := options.Backend.List(r.ctx)
+		if err != nil {
+			L.RaiseError("%s", serviceError("host.services.list", err))
+			return 0
+		}
+		result := newArrayTable(L)
+		for _, item := range items {
+			if !options.Units[item.Name].List {
+				continue
+			}
+			result.Append(serviceTable(L, item))
+		}
+		L.Push(result)
+		return 1
+	}))
+	module.RawSetString("get", L.NewFunction(func(L *glua.LState) int {
+		unit := L.CheckString(1)
+		if !services.ValidUnit(unit) {
+			L.RaiseError("host.services.get: invalid unit %q", unit)
+			return 0
+		}
+		permissions, ok := options.Units[unit]
+		if !ok || !permissions.Get {
+			L.RaiseError("host.services.get is not authorized for unit %s", unit)
+			return 0
+		}
+		detail, err := options.Backend.Detail(r.ctx, unit)
+		if err != nil {
+			L.RaiseError("%s", serviceError("host.services.get", err))
+			return 0
+		}
+		L.Push(serviceDetailTable(L, detail))
+		return 1
+	}))
+	module.RawSetString("restart", L.NewFunction(func(L *glua.LState) int {
+		unit := L.CheckString(1)
+		if !services.ValidUnit(unit) {
+			L.RaiseError("host.services.restart: invalid unit %q", unit)
+			return 0
+		}
+		permissions, ok := options.Units[unit]
+		if !ok || !permissions.Restart {
+			L.RaiseError("host.services.restart is not authorized for unit %s", unit)
+			return 0
+		}
+		if err := options.Backend.Restart(r.ctx, unit, permissions.RestartElevated); err != nil {
+			L.RaiseError("%s", serviceError("host.services.restart", err))
+			return 0
+		}
+		L.Push(glua.LTrue)
+		return 1
+	}))
+	return module
+}
+
+func serviceTable(L *glua.LState, service services.Service) *glua.LTable {
+	table := L.NewTable()
+	table.RawSetString("name", glua.LString(service.Name))
+	table.RawSetString("description", glua.LString(service.Description))
+	table.RawSetString("state", glua.LString(string(service.State)))
+	table.RawSetString("stateDetail", glua.LString(service.StateDetail))
+	table.RawSetString("bootState", glua.LString(string(service.BootState)))
+	actions := newArrayTable(L)
+	for _, action := range service.Actions {
+		actions.Append(glua.LString(string(action)))
+	}
+	table.RawSetString("actions", actions)
+	return table
+}
+
+func serviceDetailTable(L *glua.LState, detail services.ServiceDetail) *glua.LTable {
+	table := L.NewTable()
+	table.RawSetString("name", glua.LString(detail.Name))
+	table.RawSetString("state", glua.LString(string(detail.State)))
+	table.RawSetString("stateDetail", glua.LString(detail.StateDetail))
+	table.RawSetString("bootState", glua.LString(string(detail.BootState)))
+	if detail.MainPID != nil {
+		table.RawSetString("mainPid", glua.LNumber(*detail.MainPID))
+	}
+	if detail.MemoryBytes != nil {
+		table.RawSetString("memoryBytes", glua.LNumber(*detail.MemoryBytes))
+	}
+	if detail.CPUUsageNs != nil {
+		table.RawSetString("cpuUsageNs", glua.LNumber(*detail.CPUUsageNs))
+	}
+	table.RawSetString("activeEnterTimestamp", glua.LString(detail.ActiveEnterTimestamp))
+	table.RawSetString("fragmentPath", glua.LString(detail.FragmentPath))
+	return table
+}
+
+func serviceError(caller string, err error) string {
+	var serviceErr *services.Error
+	if errors.As(err, &serviceErr) {
+		return fmt.Sprintf("%s: %s: %s", caller, serviceErr.Code, serviceErr.Message)
+	}
+	return fmt.Sprintf("%s: %v", caller, err)
 }
 
 func unavailableModule(L *glua.LState, module, function string) *glua.LTable {

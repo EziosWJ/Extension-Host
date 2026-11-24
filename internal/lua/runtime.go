@@ -14,6 +14,7 @@ import (
 
 	glua "github.com/yuin/gopher-lua"
 
+	"github.com/EziosWJ/Extension-Host/hostsys/services"
 	"github.com/EziosWJ/Extension-Host/internal/store"
 )
 
@@ -37,6 +38,21 @@ type Response struct {
 	Body    []byte
 }
 
+// ServicesOptions is the service access granted to one plugin. A nil value or
+// a missing unit entry means the plugin has no access to that operation.
+type ServicesOptions struct {
+	Backend services.PluginBackend
+	Units   map[string]ServicePermissions
+}
+
+// ServicePermissions lists the service operations granted for one unit.
+type ServicePermissions struct {
+	List            bool
+	Get             bool
+	Restart         bool
+	RestartElevated bool
+}
+
 // Options configures a plugin Lua runtime.
 type Options struct {
 	EntryPath   string
@@ -46,6 +62,7 @@ type Options struct {
 	Config      func() map[string]any
 	Storage     *store.Business
 	Emit        func(event string, data any) error
+	Services    *ServicesOptions
 }
 
 // Runtime owns one GopherLua state.

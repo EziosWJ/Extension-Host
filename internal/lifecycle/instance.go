@@ -30,6 +30,7 @@ type Instance struct {
 	dataDir    string
 	logPath    string
 	config     func() map[string]any
+	services   *lua.ServicesOptions
 
 	logger   *slog.Logger
 	logFile  *os.File
@@ -50,6 +51,7 @@ type instanceOptions struct {
 	pluginDir  string
 	logPath    string
 	config     func() map[string]any
+	services   *lua.ServicesOptions
 }
 
 func newInstance(opts instanceOptions) *Instance {
@@ -63,6 +65,7 @@ func newInstance(opts instanceOptions) *Instance {
 		dataDir:       filepath.Join(opts.pluginDir, "data"),
 		logPath:       opts.logPath,
 		config:        opts.config,
+		services:      opts.services,
 		subscriptions: make(map[*Subscription]chan []byte),
 		done:          make(chan struct{}),
 	}
@@ -110,6 +113,7 @@ func (i *Instance) Start(ctx context.Context) error {
 		Config:      i.config,
 		Storage:     business,
 		Emit:        i.Emit,
+		Services:    i.services,
 	})
 	if err := i.runtime.Start(ctx); err != nil {
 		i.logger.Error("start plugin runtime", "error", err)

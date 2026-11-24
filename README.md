@@ -25,7 +25,7 @@ GoDesk 的插件宿主。仓库提供公共 Go 模块、独立命令 `godesk-ext
 ## 构建
 
 ```sh
-GOWORK=off CGO_ENABLED=0 go build -o bin/godesk-ext ./cmd/godesk-ext
+GOWORK=off CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/godesk-ext ./cmd/godesk-ext
 ```
 
 或：

@@ -4,7 +4,7 @@ DIST := dist
 .PHONY: build test vet check examples run clean
 
 build: ## 构建 godesk-ext
-	GOWORK=off CGO_ENABLED=0 go build -trimpath -o $(BIN) ./cmd/godesk-ext
+	GOWORK=off CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(BIN) ./cmd/godesk-ext
 
 test: ## 运行全部测试
 	GOWORK=off CGO_ENABLED=0 go test ./...

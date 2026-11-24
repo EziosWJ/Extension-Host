@@ -11,6 +11,28 @@ import (
 
 const maxConvertDepth = 64
 
+// arrayMarkerKey marks a Lua table as a JSON array on its metatable. Lua has no
+// distinct array type, so an empty table would otherwise encode as an object.
+const arrayMarkerKey = "__host_array"
+
+// newArrayTable returns an empty Lua table that converts to a JSON array even
+// when no elements are appended.
+func newArrayTable(L *glua.LState) *glua.LTable {
+	table := L.NewTable()
+	metatable := L.NewTable()
+	metatable.RawSetString(arrayMarkerKey, glua.LTrue)
+	L.SetMetatable(table, metatable)
+	return table
+}
+
+func isArrayTable(table *glua.LTable) bool {
+	metatable, ok := table.Metatable.(*glua.LTable)
+	if !ok {
+		return false
+	}
+	return glua.LVAsBool(metatable.RawGetString(arrayMarkerKey))
+}
+
 // toGo converts a Lua value to plain JSON-compatible Go values.
 func toGo(value glua.LValue) (any, error) {
 	return toGoDepth(value, 0, make(map[*glua.LTable]bool))
@@ -76,6 +98,9 @@ func tableToGo(table *glua.LTable, depth int, seen map[*glua.LTable]bool) (any, 
 
 	switch {
 	case count == 0:
+		if isArrayTable(table) {
+			return []any{}, nil
+		}
 		return map[string]any{}, nil
 	case allNumbers && maxIndex == count:
 		array := make([]any, maxIndex)
@@ -131,13 +156,13 @@ func toLua(L *glua.LState, value any) glua.LValue {
 	case time.Time:
 		return glua.LString(typed.Format(time.RFC3339Nano))
 	case []any:
-		table := L.NewTable()
+		table := newArrayTable(L)
 		for _, item := range typed {
 			table.Append(toLua(L, item))
 		}
 		return table
 	case []string:
-		table := L.NewTable()
+		table := newArrayTable(L)
 		for _, item := range typed {
 			table.Append(glua.LString(item))
 		}

@@ -67,8 +67,9 @@ Usage:
   godesk-ext pack <dir> [-o file]     Build a plugin ZIP
 
 Serve and run flags:
-  --listen string     HTTP listen address (default "127.0.0.1:5001")
-  --data-dir string   host data directory (default "./godesk-ext-data")
+  --listen string          HTTP listen address (default "127.0.0.1:5001")
+  --data-dir string        host data directory (default "./godesk-ext-data")
+  --service-grants string  JSON file granting plugins access to systemd units
 
 Examples:
   godesk-ext
@@ -80,9 +81,11 @@ Examples:
 func serve(ctx context.Context, args []string) error {
 	listen := "127.0.0.1:5001"
 	dataDir := "./godesk-ext-data"
+	grantsFile := ""
 	positional, err := parseFlags(args, []stringFlag{
 		{names: []string{"listen"}, value: &listen},
 		{names: []string{"data-dir"}, value: &dataDir},
+		{names: []string{"service-grants"}, value: &grantsFile},
 	})
 	if err != nil {
 		return err
@@ -90,8 +93,12 @@ func serve(ctx context.Context, args []string) error {
 	if len(positional) != 0 {
 		return fmt.Errorf("serve accepts no positional arguments")
 	}
+	grants, err := host.LoadServiceGrantsFile(grantsFile)
+	if err != nil {
+		return err
+	}
 
-	extensionHost, err := host.Open(ctx, host.Options{DataDir: dataDir})
+	extensionHost, err := host.Open(ctx, host.Options{DataDir: dataDir, ServiceGrants: grants})
 	if err != nil {
 		return err
 	}
@@ -105,9 +112,11 @@ func serve(ctx context.Context, args []string) error {
 func runPlugin(ctx context.Context, args []string) error {
 	listen := "127.0.0.1:5001"
 	dataDir := "./godesk-ext-data"
+	grantsFile := ""
 	positional, err := parseFlags(args, []stringFlag{
 		{names: []string{"listen"}, value: &listen},
 		{names: []string{"data-dir"}, value: &dataDir},
+		{names: []string{"service-grants"}, value: &grantsFile},
 	})
 	if err != nil {
 		return err
@@ -119,8 +128,12 @@ func runPlugin(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	grants, err := host.LoadServiceGrantsFile(grantsFile)
+	if err != nil {
+		return err
+	}
 
-	extensionHost, err := host.Open(ctx, host.Options{DataDir: dataDir})
+	extensionHost, err := host.Open(ctx, host.Options{DataDir: dataDir, ServiceGrants: grants})
 	if err != nil {
 		return err
 	}

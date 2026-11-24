@@ -2,13 +2,13 @@
 
 GoDesk 的插件宿主。仓库提供公共 Go 模块、独立命令 `godesk-ext`、最小管理界面和示例插件。
 
-当前完成实施 Spec 的**阶段 A（工单 01 · 独立运行闭环）**。同一份插件 ZIP 之后也用于 GoDesk 嵌入验收（工单 02）。共享 systemd、Mihomo 插件和完整开发命令分别属于工单 03–05，尚未实现。
+当前完成实施 Spec 的工单 01（独立运行闭环）、工单 02（GoDesk 嵌入），以及工单 03 的宿主侧共享 systemd 能力与 `host.services` 授权；GoDesk 原生服务管理的接入随 v0.2.0 发布。Mihomo 插件和完整开发命令属于工单 04–05，尚未实现。
 
 - 共享契约：[GoDesk 插件首版契约](https://github.com/EziosWJ/GoDesk/blob/main/docs/extensions.md)
 - 实施顺序：[Extension Host 实施 Spec](https://github.com/EziosWJ/GoDesk/blob/main/.scratch/extension-host/spec.md)
 - 进程与仓库边界：[ADR 0009](https://github.com/EziosWJ/GoDesk/blob/main/docs/adr/0009-embed-extension-host-from-separate-module.md)
 
-## 阶段 A 已实现
+## 已实现
 
 - 仅依赖本仓库，使用 `GOWORK=off CGO_ENABLED=0` 构建和运行。
 - `godesk-ext` 默认监听 `127.0.0.1:5001`，提供插件管理页。
@@ -18,7 +18,8 @@ GoDesk 的插件宿主。仓库提供公共 Go 模块、独立命令 `godesk-ext
 - 安装、启用、启动、停止、禁用、卸载、重启恢复，以及保留/清除业务数据。
 - 配置持久化；标记为 `secret` 的值不出现在管理响应和宿主日志中。
 - 无效包、缺失入口、不兼容 Host API、未获授权的 Host 调用返回明确错误。
-- `host.http`、`host.ws`、`host.services` 在阶段 A 始终返回明确的“未授权”错误；能力实现和授权配置随工单 03/04 交付。
+- `host.services` 通过共享的 `hostsys/services` 后端提供 `list`、`get`、`restart`，按部署者的 `--service-grants` 配置逐插件授权。
+- `host.http`、`host.ws` 尚未实现，始终返回明确的“未授权”错误。
 
 ## 构建
 
@@ -54,8 +55,8 @@ make examples
 
 | 命令 | 行为 |
 | --- | --- |
-| `godesk-ext` / `godesk-ext serve` | 启动宿主和管理页。参数：`--listen`、`--data-dir`。 |
-| `godesk-ext run <dir\|zip>` | 安装、启用并运行一个插件，然后启动宿主。 |
+| `godesk-ext` / `godesk-ext serve` | 启动宿主和管理页。参数：`--listen`、`--data-dir`、`--service-grants`。 |
+| `godesk-ext run <dir\|zip>` | 安装、启用并运行一个插件，然后启动宿主。参数同上。 |
 | `godesk-ext validate <dir\|zip>` | 校验 Manifest、入口、Host API 兼容性和包路径。 |
 | `godesk-ext pack <dir> [-o file]` | 校验后打包。默认输出 `dist/<id>-<version>.zip`。 |
 
@@ -173,9 +174,9 @@ local text = host.json.encode(payload)
 | --- | --- |
 | `host.dataDir` | 当前插件的数据目录，用于放置自有文件。 |
 | `host.apiVersion` | 当前宿主 API 版本，值为 `1`。 |
-| `host.http.request` | 阶段 A 返回 `host.http.request is not authorized`。 |
-| `host.ws.subscribe` | 阶段 A 返回 `host.ws.subscribe is not authorized`。 |
-| `host.services.list/get/restart` | 阶段 A 返回对应 `not authorized` 错误。 |
+| `host.http.request` | 尚未实现，调用返回 `host.http.request is not authorized`。 |
+| `host.ws.subscribe` | 尚未实现，调用返回 `host.ws.subscribe is not authorized`。 |
+| `host.services.list/get/restart` | 按部署授权访问 systemd 服务；未授权时返回明确错误。详见下一节。 |
 
 ### 标准库和 `require`
 
@@ -189,6 +190,56 @@ local text = host.json.encode(payload)
 ```
 
 模块名形如 `a.b` 时解析为 `a/b.lua` 或 `a/b/init.lua`。加载结果缓存，循环依赖会报错。
+
+## 服务授权与 `host.services`
+
+插件使用服务能力必须同时满足两个条件：
+
+1. Manifest 的 `capabilities` 声明 `"services"`。
+2. 宿主启动时通过 `--service-grants <file>` 为该插件 ID 配置授权。
+
+授权文件是 JSON 对象，键为插件 ID：
+
+```json
+{
+  "com.godesk.services": {
+    "units": ["ssh.service", "cron.service"],
+    "actions": ["list", "get", "restart"],
+    "elevate": ["restart"]
+  }
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `units` | 可访问的 systemd 单元名；每个名字都必须是合法的 `.service` 单元名。 |
+| `actions` | 允许的操作子集：`list`、`get`、`restart`。 |
+| `elevate` | 需要通过非交互式 `sudo -n` 以 root 运行的操作子集；当前只有 `restart` 会使用该标记。 |
+
+`elevate` 中的每一项必须同时出现在 `actions` 中。授权在 `host.Open` 时校验，插件 ID 为空、单元名非法、操作未知或越权提权都会返回描述性错误。未出现在授权文件中的插件、未声明 `services` 能力的插件、未列出的单元和未授予的操作都会被拒绝。
+
+```sh
+./bin/godesk-ext run ./examples/services --service-grants ./service-grants.json --data-dir ./godesk-ext-data
+```
+
+### 插件侧接口
+
+```lua
+local items = host.services.list()
+local detail = host.services.get("ssh.service")
+host.services.restart("ssh.service")
+```
+
+- `list()` 返回服务数组，每项包含 `name`、`description`、`state`、`stateDetail`、`bootState`、`actions`，并且只包含拥有 `list` 权限的单元。没有任何单元拥有 `list` 权限时抛出 `host.services.list is not authorized: no service grant is configured`。
+- `get(unit)` 返回单元详情，字段为 `name`、`state`、`stateDetail`、`bootState`、`mainPid`、`memoryBytes`、`cpuUsageNs`、`activeEnterTimestamp`、`fragmentPath`；需要该单元精确的 `get` 权限。
+- `restart(unit)` 重启单元并返回 `true`；需要该单元精确的 `restart` 权限。配置在 `elevate` 中的 `restart` 会通过非交互式 sudo 执行。
+- 单元名不合法时抛出包含 `invalid unit` 的错误。
+- 未获授权的单元或操作抛出 `host.services.<fn> is not authorized for unit <name>`。
+- 后端错误保留机器可读错误码，例如 `host.services.get: not_found: 服务不存在`、`host.services.restart: permission: ...`、`host.services.list: operation_failed: ...`。
+- 未检测到可用的服务后端（例如 systemd 不可用）时，三个函数都返回 `host.services.<fn>: operation_failed: 没有可用的服务后端`。
+- 插件没有 `services` 能力或没有任何授权时，三个函数都返回 `host.services.<fn> is not authorized: no capability grant is configured`。
+
+`host.services` 只暴露插件所需的最小服务面；启动、停止、启用、禁用和日志仍保留给宿主原生服务管理。重启默认以宿主运行账号执行，只有显式配置 `elevate` 才使用 sudo。
 
 ## HTTP 路由
 
@@ -261,7 +312,7 @@ GOWORK=off CGO_ENABLED=0 go test ./...
 make check
 ```
 
-集成测试覆盖安装、启用、HTTP、WebSocket、SQLite 持久化、宿主重启恢复、停止/禁用意图、启动失败重试、配置脱敏、Web-only/Lua-only 和非法包错误。
+集成测试覆盖安装、启用、HTTP、WebSocket、SQLite 持久化、宿主重启恢复、停止/禁用意图、启动失败重试、配置脱敏、Web-only/Lua-only、非法包错误，以及服务授权的列表过滤、单元级拒绝、能力校验和后端错误传播。
 
 ## 安全模型
 
@@ -273,8 +324,8 @@ make check
 
 | 工单 | 内容 |
 | --- | --- |
-| 01 | 独立运行示例插件（当前） |
-| 02 | GoDesk 嵌入并通过拆分验收 |
-| 03 | 抽取共享 systemd 能力 |
+| 01 | 独立运行示例插件（已完成） |
+| 02 | GoDesk 嵌入并通过拆分验收（已完成） |
+| 03 | 抽取共享 systemd 能力（宿主侧已完成，GoDesk 接入随 v0.2.0） |
 | 04 | 交付双模式 Mihomo 插件 |
 | 05 | 交付独立开发与测试流程（`dev`、`logs`、`test` 等） |

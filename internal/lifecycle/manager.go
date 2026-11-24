@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/EziosWJ/Extension-Host/internal/bundle"
+	"github.com/EziosWJ/Extension-Host/internal/lua"
 	"github.com/EziosWJ/Extension-Host/internal/manifest"
 	"github.com/EziosWJ/Extension-Host/internal/store"
 )
@@ -53,16 +54,21 @@ type Options struct {
 	DataDir string
 	Store   *store.Store
 	Logger  *slog.Logger
+	// ServicesForPlugin resolves the service access granted to a plugin. It
+	// receives the plugin ID and the capabilities declared by its manifest. A
+	// nil result means the plugin has no access to host.services.
+	ServicesForPlugin func(pluginID string, manifestCapabilities []string) *lua.ServicesOptions
 }
 
 // Manager manages plugin installations and instances.
 type Manager struct {
-	dataDir     string
-	packagesDir string
-	pluginsDir  string
-	logsDir     string
-	store       *store.Store
-	logger      *slog.Logger
+	dataDir           string
+	packagesDir       string
+	pluginsDir        string
+	logsDir           string
+	store             *store.Store
+	logger            *slog.Logger
+	servicesForPlugin func(pluginID string, manifestCapabilities []string) *lua.ServicesOptions
 
 	mu     sync.Mutex
 	states map[string]*state
@@ -92,14 +98,15 @@ func New(ctx context.Context, opts Options) (*Manager, error) {
 		opts.Logger = slog.Default()
 	}
 	manager := &Manager{
-		dataDir:     opts.DataDir,
-		packagesDir: filepath.Join(opts.DataDir, "packages"),
-		pluginsDir:  filepath.Join(opts.DataDir, "plugins"),
-		logsDir:     filepath.Join(opts.DataDir, "logs"),
-		store:       opts.Store,
-		logger:      opts.Logger,
-		states:      make(map[string]*state),
-		locks:       make(map[string]*sync.Mutex),
+		dataDir:           opts.DataDir,
+		packagesDir:       filepath.Join(opts.DataDir, "packages"),
+		pluginsDir:        filepath.Join(opts.DataDir, "plugins"),
+		logsDir:           filepath.Join(opts.DataDir, "logs"),
+		store:             opts.Store,
+		logger:            opts.Logger,
+		servicesForPlugin: opts.ServicesForPlugin,
+		states:            make(map[string]*state),
+		locks:             make(map[string]*sync.Mutex),
 	}
 	for _, dir := range []string{manager.dataDir, manager.packagesDir, manager.pluginsDir, manager.logsDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -539,6 +546,10 @@ func (m *Manager) startLocked(ctx context.Context, state *state) error {
 	logPath := state.logPath
 	m.mu.Unlock()
 
+	var servicesOptions *lua.ServicesOptions
+	if m.servicesForPlugin != nil {
+		servicesOptions = m.servicesForPlugin(record.ID, parsed.Capabilities)
+	}
 	instance := newInstance(instanceOptions{
 		id:         record.ID,
 		version:    record.Version,
@@ -547,6 +558,7 @@ func (m *Manager) startLocked(ctx context.Context, state *state) error {
 		pluginDir:  filepath.Join(m.pluginsDir, record.ID),
 		logPath:    logPath,
 		config:     m.configGetter(record.ID),
+		services:   servicesOptions,
 	})
 	if err := instance.Start(ctx); err != nil {
 		m.mu.Lock()

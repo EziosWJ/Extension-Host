@@ -26,7 +26,25 @@ const statusLabels = {
   failed: "启动失败",
 };
 
+const installDialog = document.querySelector("#install-dialog");
+const openInstall = document.querySelector("#open-install");
+const installError = document.querySelector("#install-error");
+const search = document.querySelector("#search");
+const statusFilter = document.querySelector("#status-filter");
+let currentPlugins = [];
+const navButtons = document.querySelectorAll("[data-page]");
+navButtons.forEach((button) => button.addEventListener("click", () => {
+  const page = button.dataset.page;
+  document.querySelector("#plugins-page").hidden = page !== "plugins";
+  document.querySelector("#settings-page").hidden = page !== "settings";
+  navButtons.forEach((item) => item.toggleAttribute("aria-current", item === button));
+}));
 const rows = new Map();
+openInstall.addEventListener("click", () => { installError.textContent = ""; installDialog.showModal(); });
+document.querySelector("#cancel-install").addEventListener("click", () => installDialog.close());
+installDialog.addEventListener("close", () => openInstall.focus());
+search.addEventListener("input", () => render(currentPlugins));
+statusFilter.addEventListener("change", () => render(currentPlugins));
 let refreshVersion = 0;
 let uninstalling = null;
 let savedHome = "";
@@ -220,14 +238,27 @@ function createRow() {
   const actions = element("div", "actions");
   header.append(identity, actions);
   const error = element("p", "feedback error");
-  const details = element("details");
-  const summary = element("summary", "", "详情与操作");
-  const body = element("div", "details-body");
-  const metadata = element("dl", "metadata");
+  const panel = element("dialog", "plugin-dialog");
+  const panelHeader = element("div", "panel-header");
+  const panelTitle = element("h2");
+  const close = actionButton("关闭", "", () => panel.close());
+  panelHeader.append(panelTitle, close);
+  const body = element("div", "panel-body");
+  const status = element("p", "feedback");
+  status.setAttribute("role", "status");
+  const operations = element("section", "panel-section");
+  operations.append(element("h3", "", "运行管理"), element("p", "caption", "控制插件运行状态，或卸载插件。"));
   const more = element("div", "actions");
-  details.append(summary, body);
-  body.append(metadata, more);
-  node.append(header, error, details);
+  operations.append(more);
+  const info = element("section", "panel-section");
+  info.append(element("h3", "", "插件信息"));
+  const metadata = element("dl", "metadata");
+  info.append(metadata);
+  body.append(status, operations, info);
+  panel.append(panelHeader, body);
+  const summary = actionButton("管理", "", () => panel.showModal());
+  panel.addEventListener("close", () => { if (summary.isConnected) summary.focus(); });
+  node.append(header, error, panel);
 
   let signature;
   let schema;
@@ -236,6 +267,7 @@ function createRow() {
 
   function update(plugin) {
     title.textContent = plugin.name;
+    panelTitle.textContent = plugin.name;
     version.textContent = `v${plugin.version}`;
     badge.dataset.state = plugin.enabled ? plugin.status : "disabled";
     badge.textContent = plugin.enabled ? statusLabels[plugin.status] || plugin.status : "未启用";
@@ -258,7 +290,7 @@ function createRow() {
       if (config?.form.contains(document.activeElement)) summary.focus();
       config?.form.remove();
       config = Object.keys(plugin.configSchema || {}).length ? configForm(plugin) : null;
-      if (config) body.insertBefore(config.form, more);
+      if (config) { config.form.classList.add("panel-section"); body.insertBefore(config.form, info); }
       schema = nextSchema;
     }
     config?.update(plugin.config);
@@ -270,6 +302,7 @@ function createRow() {
     const restoreAction = actions.contains(active) || more.contains(active);
     actions.replaceChildren();
     more.replaceChildren();
+    actions.append(summary);
 
     function lifecycle(label, action, style = "") {
       const button = actionButton(label, style, async () => {
@@ -278,10 +311,10 @@ function createRow() {
         setBusy(button, true, `${label}中…`);
         try {
           await api(`${pluginPath(plugin.id)}/${action}`, { method: "POST" });
-          feedback(notice, `${plugin.name}已${label === "重试" ? "启动" : label}。`, "success");
+          feedback(status, `${plugin.name}已${label === "重试" ? "启动" : label}。`, "success");
           await refresh(false);
         } catch (cause) {
-          feedback(notice, `${label}失败：${cause.message}`, "error");
+          feedback(status, `${label}失败：${cause.message}`, "error");
           await refresh(false);
         } finally {
           pending = false;
@@ -293,7 +326,7 @@ function createRow() {
     }
 
     if (!plugin.enabled) {
-      actions.append(lifecycle("启用", "enable", "primary"));
+      more.append(lifecycle("启用", "enable", "primary"));
     } else if (plugin.status === "running" && plugin.hasWeb) {
       const link = element("a", "button primary", "打开");
       link.href = plugin.webPath;
@@ -302,10 +335,10 @@ function createRow() {
       link.dataset.action = "open";
       actions.append(link);
     } else if (plugin.status === "failed" || plugin.status === "stopped") {
-      actions.append(lifecycle(plugin.status === "failed" ? "重试" : "启动", "start", "primary"));
+      more.append(lifecycle(plugin.status === "failed" ? "重试" : "启动", "start", "primary"));
     }
     if (plugin.enabled && plugin.status === "running") {
-      (plugin.hasWeb ? more : actions).append(lifecycle("停止", "stop"));
+      more.append(lifecycle("停止", "stop"));
     }
     if (plugin.enabled && !["starting", "stopping"].includes(plugin.status)) {
       more.append(lifecycle("禁用", "disable"));
@@ -326,7 +359,17 @@ function createRow() {
 }
 
 function render(plugins) {
-  countLabel.textContent = `${plugins.length} 个插件`;
+  currentPlugins = plugins;
+  document.querySelector("#total-count").textContent = plugins.length;
+  document.querySelector("#running-count").textContent = plugins.filter((p) => p.enabled && p.status === "running").length;
+  document.querySelector("#attention-count").textContent = plugins.filter((p) => p.enabled && p.status === "failed").length;
+  const query = search.value.trim().toLocaleLowerCase();
+  const visible = plugins.filter((p) => {
+    const state = p.enabled ? p.status : "disabled";
+    return (!query || `${p.name} ${p.id}`.toLocaleLowerCase().includes(query)) && (statusFilter.value === "all" || state === statusFilter.value);
+  });
+  countLabel.textContent = `显示 ${visible.length} / ${plugins.length} 个插件`;
+  feedback(listState, plugins.length && !visible.length ? "没有符合条件的插件，请调整搜索或筛选。" : plugins.length ? "" : "还没有安装插件，请点击安装插件添加。" );
   const ids = new Set(plugins.map((plugin) => plugin.id));
   for (const [id, row] of rows) {
     if (ids.has(id)) continue;
@@ -335,7 +378,7 @@ function render(plugins) {
     rows.delete(id);
   }
 
-  const sorted = [...plugins].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  const sorted = [...visible].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   let next = pluginsRoot.firstElementChild;
   for (const plugin of sorted) {
     let row = rows.get(plugin.id);
@@ -349,8 +392,10 @@ function render(plugins) {
       pluginsRoot.insertBefore(row.node, next);
       if (row.node.contains(active)) active.focus({ preventScroll: true });
     }
+    row.node.hidden = false;
     next = row.node.nextElementSibling;
   }
+  for (const [id, row] of rows) if (!visible.some((plugin) => plugin.id === id)) row.node.hidden = true;
 }
 
 function renderHome(settings, plugins) {
@@ -360,21 +405,31 @@ function renderHome(settings, plugins) {
     return;
   }
 
-  const draft = homePlugin.value === savedHome ? null : homePlugin.value;
-  savedHome = settings.pluginId;
-  homePlugin.replaceChildren(new Option("宿主管理页", ""));
+  const checked = homePlugin.querySelector('input:checked');
+  const draft = checked && checked.value !== savedHome ? checked.value : null;
+  savedHome = settings.pluginId || "";
   const selected = plugins.find((plugin) => plugin.id === savedHome);
+  const choices = [{ id: "", name: "宿主管理页", description: "打开插件管理控制台" }];
   for (const plugin of plugins) {
-    if (plugin.enabled && plugin.hasWeb) {
-      homePlugin.add(new Option(`${plugin.name}（${plugin.id}）`, plugin.id));
-    }
+    if (plugin.enabled && plugin.hasWeb) choices.push({ id: plugin.id, name: plugin.name, description: plugin.id });
   }
-  if (savedHome && !Array.from(homePlugin.options).some((option) => option.value === savedHome)) {
-    homePlugin.add(new Option(`${selected?.name || savedHome}（当前不可用）`, savedHome));
+  if (savedHome && !choices.some((choice) => choice.id === savedHome)) {
+    choices.push({ id: savedHome, name: selected?.name || savedHome, description: "当前不可用" });
   }
-  homePlugin.value = draft !== null && Array.from(homePlugin.options).some((option) => option.value === draft)
-    ? draft : savedHome;
-  homePlugin.disabled = false;
+  const value = draft !== null && choices.some((choice) => choice.id === draft) ? draft : savedHome;
+  homePlugin.replaceChildren();
+  for (const choice of choices) {
+    const label = element("label", "home-choice");
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "home-plugin";
+    input.value = choice.id;
+    input.checked = choice.id === value;
+    const text = element("span", "home-choice-text");
+    text.append(element("strong", "", choice.name), element("span", "caption", choice.description));
+    label.append(input, text);
+    homePlugin.append(label);
+  }
   homeSave.disabled = false;
   homeHint.textContent = savedHome && (!selected?.enabled || selected.status !== "running" || !selected.hasWeb)
     ? "首页插件当前不可用，访问 / 会打开管理页。"
@@ -384,7 +439,7 @@ function renderHome(settings, plugins) {
 homeForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   if (savingHome || homeSave.disabled) return;
-  const selection = homePlugin.value;
+  const selection = homePlugin.querySelector("input:checked")?.value ?? "";
   savingHome = true;
   setBusy(homeSave, true, "正在保存…");
   feedback(homeStatus, "");
@@ -424,7 +479,7 @@ async function refresh(clearNotice = true) {
       if (clearNotice) feedback(homeStatus, "");
       renderHome(settings, plugins);
     }
-    feedback(listState, plugins.length ? "" : "还没有安装插件。请选择 ZIP 文件。");
+
   } catch (error) {
     if (version === refreshVersion) {
       feedback(listState, `无法读取插件列表：${error.message}。请刷新重试。`, "error");
@@ -445,10 +500,11 @@ installForm.addEventListener("submit", async (event) => {
     form.append("package", file);
     const plugin = await api("/api/v1/extensions", { method: "POST", body: form });
     if (packageInput.files[0] === file) packageInput.value = "";
+    installDialog.close();
     feedback(notice, `已安装 ${plugin.name} ${plugin.version}，当前未启用。`, "success");
     await refresh(false);
   } catch (error) {
-    feedback(notice, `安装失败：${error.message}`, "error");
+    feedback(installError, `安装失败：${error.message}`, "error");
   } finally {
     setBusy(submit, false, "安装");
   }

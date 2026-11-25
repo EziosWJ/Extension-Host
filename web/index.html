@@ -8,52 +8,28 @@
   <script defer src="./app.js"></script>
 </head>
 <body>
-  <header class="toolbar">
-    <div class="toolbar-content">
-      <h1>扩展</h1>
-      <button id="refresh" type="button" aria-label="刷新扩展列表">刷新</button>
-    </div>
-  </header>
+  <header class="toolbar"><div class="toolbar-content"><span class="brand">Extension Host <span>控制台</span></span><nav class="top-nav" aria-label="主导航"><button type="button" data-page="plugins" aria-current="page">插件管理</button><button type="button" data-page="settings">宿主设置</button></nav><button id="refresh" type="button">刷新</button></div></header>
   <main>
-    <section class="install" aria-labelledby="install-title">
-      <h2 id="install-title">安装插件包</h2>
-      <form id="install-form">
-        <label for="package">插件 ZIP 文件</label>
-        <div class="install-controls">
-          <input id="package" name="package" type="file" accept=".zip,application/zip" required>
-          <button class="primary" type="submit">安装</button>
-        </div>
-      </form>
-    </section>
-
-    <section class="home-settings" aria-labelledby="home-title">
-      <h2 id="home-title">宿主首页</h2>
-      <form id="home-form">
-        <div id="home-controls" class="home-controls">
-          <label class="field">
-            首页插件
-            <select id="home-plugin" aria-describedby="home-hint" disabled>
-              <option value="">宿主管理页</option>
-            </select>
-          </label>
-          <button type="submit" disabled>保存首页</button>
-        </div>
-        <p id="home-hint" class="caption"></p>
-        <p id="home-status" class="feedback" role="status"></p>
-      </form>
-    </section>
-
     <p id="notice" class="feedback" role="status"></p>
+    <div id="plugins-page">
+    <div class="page-heading"><div><h1>插件管理</h1><p class="page-description">管理插件、运行状态与宿主设置。</p></div><button id="open-install" class="primary" type="button">安装插件</button></div>
+    <section class="overview" aria-label="插件概览">
+      <div><span>已安装</span><strong id="total-count">—</strong></div>
+      <div><span>运行中</span><strong id="running-count">—</strong></div>
+      <div><span>需要关注</span><strong id="attention-count">—</strong></div>
+    </section>
 
-    <section aria-labelledby="list-title">
-      <div class="section-head">
-        <h2 id="list-title">已安装插件</h2>
-        <span id="count" class="caption"></span>
-      </div>
-      <p id="list-state" class="feedback" role="status">正在加载插件…</p>
-      <div id="plugins" class="plugins"></div>
+    <section class="plugin-section" aria-labelledby="list-title">
+      <div class="section-head"><div><h2 id="list-title">插件</h2><span id="count" class="caption"></span></div></div>
+      <div class="filters"><label class="field"><span>搜索插件</span><input id="search" type="search" placeholder="按名称或 ID 搜索"></label><label class="field"><span>状态</span><select id="status-filter"><option value="all">全部状态</option><option value="running">运行中</option><option value="stopped">已停止</option><option value="disabled">未启用</option><option value="failed">启动失败</option></select></label></div>
+      <p id="list-state" class="feedback" role="status">正在加载插件…</p><div id="plugins" class="plugins"></div>
+    </section>
+    </div>
+    <section id="settings-page" hidden class="home-settings" aria-labelledby="home-title"><h1 id="home-title">宿主设置</h1><p class="page-description">管理独立宿主的默认页面。</p><div class="settings-card"><h2>宿主首页</h2><p class="caption">选择访问宿主根地址时打开的页面。</p>
+      <form id="home-form"><div id="home-controls" class="home-controls"><fieldset class="home-choices" aria-describedby="home-hint"><legend>首页插件</legend><div id="home-plugin"></div></fieldset><button class="primary" type="submit" disabled>保存首页</button></div><p id="home-hint" class="caption"></p><p id="home-status" class="feedback" role="status"></p></form></div>
     </section>
   </main>
+  <dialog id="install-dialog" aria-labelledby="install-title"><form id="install-form"><h2 id="install-title">安装插件</h2><p class="caption">选择插件 ZIP 文件，安装后可在列表中启用。</p><label class="field" for="package">插件 ZIP 文件</label><input id="package" name="package" type="file" accept=".zip,application/zip" required><p id="install-error" class="feedback error" role="alert"></p><div class="actions dialog-actions"><button id="cancel-install" type="button">取消</button><button class="primary" type="submit">安装</button></div></form></dialog>
 
   <dialog id="uninstall-dialog" aria-labelledby="uninstall-title" aria-describedby="uninstall-description">
     <form id="uninstall-form">

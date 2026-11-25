@@ -14,6 +14,7 @@ import (
 	glua "github.com/yuin/gopher-lua"
 
 	"github.com/EziosWJ/Extension-Host/hostsys/services"
+	"github.com/EziosWJ/Extension-Host/internal/serviceaccess"
 	"github.com/EziosWJ/Extension-Host/internal/store"
 )
 
@@ -53,11 +54,7 @@ func (r *Runtime) setup(L *glua.LState) error {
 	host.RawSetString("json", r.jsonModule(L))
 	host.RawSetString("http", unavailableModule(L, "host.http", "request"))
 	host.RawSetString("ws", unavailableModule(L, "host.ws", "subscribe"))
-	if r.opts.Services != nil {
-		host.RawSetString("services", r.servicesModule(L))
-	} else {
-		host.RawSetString("services", unavailableServices(L))
-	}
+	host.RawSetString("services", r.servicesModule(L))
 	L.SetGlobal("host", host)
 	return nil
 }
@@ -294,27 +291,13 @@ func (r *Runtime) servicesModule(L *glua.LState) *glua.LTable {
 	options := r.opts.Services
 	module := L.NewTable()
 	module.RawSetString("list", L.NewFunction(func(L *glua.LState) int {
-		granted := false
-		for _, permissions := range options.Units {
-			if permissions.List {
-				granted = true
-				break
-			}
-		}
-		if !granted {
-			L.RaiseError("host.services.list is not authorized: no service grant is configured")
-			return 0
-		}
-		items, err := options.Backend.List(r.ctx)
+		items, err := options.List(r.ctx)
 		if err != nil {
 			L.RaiseError("%s", serviceError("host.services.list", err))
 			return 0
 		}
 		result := newArrayTable(L)
 		for _, item := range items {
-			if !options.Units[item.Name].List {
-				continue
-			}
 			result.Append(serviceTable(L, item))
 		}
 		L.Push(result)
@@ -322,16 +305,7 @@ func (r *Runtime) servicesModule(L *glua.LState) *glua.LTable {
 	}))
 	module.RawSetString("get", L.NewFunction(func(L *glua.LState) int {
 		unit := L.CheckString(1)
-		if !services.ValidUnit(unit) {
-			L.RaiseError("host.services.get: invalid unit %q", unit)
-			return 0
-		}
-		permissions, ok := options.Units[unit]
-		if !ok || !permissions.Get {
-			L.RaiseError("host.services.get is not authorized for unit %s", unit)
-			return 0
-		}
-		detail, err := options.Backend.Detail(r.ctx, unit)
+		detail, err := options.Detail(r.ctx, unit)
 		if err != nil {
 			L.RaiseError("%s", serviceError("host.services.get", err))
 			return 0
@@ -341,16 +315,7 @@ func (r *Runtime) servicesModule(L *glua.LState) *glua.LTable {
 	}))
 	module.RawSetString("restart", L.NewFunction(func(L *glua.LState) int {
 		unit := L.CheckString(1)
-		if !services.ValidUnit(unit) {
-			L.RaiseError("host.services.restart: invalid unit %q", unit)
-			return 0
-		}
-		permissions, ok := options.Units[unit]
-		if !ok || !permissions.Restart {
-			L.RaiseError("host.services.restart is not authorized for unit %s", unit)
-			return 0
-		}
-		if err := options.Backend.Restart(r.ctx, unit, permissions.RestartElevated); err != nil {
+		if err := options.Restart(r.ctx, unit); err != nil {
 			L.RaiseError("%s", serviceError("host.services.restart", err))
 			return 0
 		}
@@ -396,6 +361,10 @@ func serviceDetailTable(L *glua.LState, detail services.ServiceDetail) *glua.LTa
 }
 
 func serviceError(caller string, err error) string {
+	var accessErr *serviceaccess.Error
+	if errors.As(err, &accessErr) {
+		return accessErr.Message
+	}
 	var serviceErr *services.Error
 	if errors.As(err, &serviceErr) {
 		return fmt.Sprintf("%s: %s: %s", caller, serviceErr.Code, serviceErr.Message)
@@ -406,14 +375,6 @@ func serviceError(caller string, err error) string {
 func unavailableModule(L *glua.LState, module, function string) *glua.LTable {
 	table := L.NewTable()
 	table.RawSetString(function, L.NewFunction(unavailable(module, function)))
-	return table
-}
-
-func unavailableServices(L *glua.LState) *glua.LTable {
-	table := L.NewTable()
-	for _, function := range []string{"list", "get", "restart"} {
-		table.RawSetString(function, L.NewFunction(unavailable("host.services", function)))
-	}
 	return table
 }
 

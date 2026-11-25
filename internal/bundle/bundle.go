@@ -4,6 +4,7 @@ package bundle
 import (
 	"archive/zip"
 	"bytes"
+	"debug/elf"
 	"fmt"
 	"io"
 	"io/fs"
@@ -86,7 +87,7 @@ func loadDir(dir string, project bool, exclude ...string) (*Bundle, error) {
 		name := filepath.ToSlash(rel)
 		if project {
 			top, _, _ := strings.Cut(name, "/")
-			if top != "manifest.json" && top != "web" && top != "lua" {
+			if top != "manifest.json" && top != "web" && top != "lua" && top != "native" {
 				if entry.IsDir() {
 					return filepath.SkipDir
 				}
@@ -95,7 +96,7 @@ func loadDir(dir string, project bool, exclude ...string) (*Bundle, error) {
 			if name == "manifest.json" && !entry.Type().IsRegular() {
 				return fmt.Errorf("project: manifest.json must be a regular file")
 			}
-			if (name == "web" || name == "lua") && !entry.IsDir() {
+			if (name == "web" || name == "lua" || name == "native") && !entry.IsDir() {
 				return fmt.Errorf("project: %s must be a directory", name)
 			}
 		}
@@ -216,7 +217,7 @@ func (b *Bundle) Zip() ([]byte, error) {
 	sort.Strings(names)
 	for _, name := range names {
 		header := &zip.FileHeader{Name: name, Method: zip.Deflate}
-		header.SetMode(0o644)
+		header.SetMode(b.fileMode(name))
 		header.Modified = time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
 		entry, err := writer.CreateHeader(header)
 		if err != nil {
@@ -246,11 +247,27 @@ func (b *Bundle) Extract(dst string) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return fmt.Errorf("create package directory: %w", err)
 		}
-		if err := os.WriteFile(target, data, 0o644); err != nil {
+		if err := os.WriteFile(target, data, b.fileMode(name)); err != nil {
 			return fmt.Errorf("write package file %q: %w", name, err)
 		}
 	}
 	return nil
+}
+
+func (b *Bundle) fileMode(name string) fs.FileMode {
+	if name == b.Manifest.Entry.Native {
+		return 0o755
+	}
+	return 0o644
+}
+
+// Filename is the standard distribution name for the package.
+func (b *Bundle) Filename() string {
+	name := b.Manifest.ID + "-" + b.Manifest.Version
+	if b.Manifest.Native != nil {
+		name += "-" + b.Manifest.Native.Platform
+	}
+	return name + ".zip"
 }
 
 func build(files map[string][]byte) (*Bundle, error) {
@@ -265,7 +282,7 @@ func build(files map[string][]byte) (*Bundle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("package: %w", err)
 	}
-	for name, entry := range map[string]string{"entry.web": parsed.Entry.Web, "entry.lua": parsed.Entry.Lua} {
+	for name, entry := range map[string]string{"entry.web": parsed.Entry.Web, "entry.lua": parsed.Entry.Lua, "entry.native": parsed.Entry.Native} {
 		if entry == "" {
 			continue
 		}
@@ -273,7 +290,37 @@ func build(files map[string][]byte) (*Bundle, error) {
 			return nil, fmt.Errorf("package: %s %q does not exist", name, entry)
 		}
 	}
+	if parsed.Native != nil {
+		if err := validateExecutable(files[parsed.Entry.Native], parsed.Native.Platform); err != nil {
+			return nil, fmt.Errorf("package: entry.native %q: %w", parsed.Entry.Native, err)
+		}
+	}
 	return &Bundle{Manifest: parsed, Files: files}, nil
+}
+
+func validateExecutable(data []byte, platform string) error {
+	executable, err := elf.NewFile(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("invalid ELF executable: %w", err)
+	}
+	machine := elf.EM_X86_64
+	if platform == "linux-arm64" {
+		machine = elf.EM_AARCH64
+	}
+	if executable.Machine != machine || executable.Class != elf.ELFCLASS64 || executable.Data != elf.ELFDATA2LSB {
+		return fmt.Errorf("ELF architecture does not match %s", platform)
+	}
+	if executable.Entry == 0 || (executable.Type != elf.ET_EXEC && executable.Type != elf.ET_DYN) ||
+		(executable.OSABI != elf.ELFOSABI_NONE && executable.OSABI != elf.ELFOSABI_LINUX) {
+		return fmt.Errorf("expected a Linux executable")
+	}
+	for _, program := range executable.Progs {
+		if program.Type == elf.PT_LOAD && program.Flags&elf.PF_X != 0 &&
+			executable.Entry >= program.Vaddr && executable.Entry-program.Vaddr < program.Filesz {
+			return nil
+		}
+	}
+	return fmt.Errorf("ELF entry point is outside executable segments")
 }
 
 func trimDirSlash(name string) string {

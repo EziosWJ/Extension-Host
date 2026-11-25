@@ -265,14 +265,29 @@ func (g *Gateway) api(w http.ResponseWriter, r *http.Request) {
 		g.fail(w, err)
 		return
 	}
-	if !instance.HasLua() {
-		g.fail(w, fmt.Errorf("%w: %s", lifecycle.ErrNoLua, id))
-		return
-	}
 	prefix := "/extensions/" + id + "/api"
 	routePath := strings.TrimPrefix(r.URL.Path, prefix)
 	if routePath == "" {
 		routePath = "/"
+	}
+	if process := instance.Native(); process != nil {
+		if r.ContentLength > maxRequestBody {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body is too large")
+			return
+		}
+		// Remove the mount prefix while preserving encoded path components.
+		segments := strings.SplitN(r.URL.EscapedPath(), "/", 5)
+		rawRoute := "/"
+		if len(segments) == 5 {
+			rawRoute += segments[4]
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+		process.ServeWeb(w, r, routePath, rawRoute)
+		return
+	}
+	if !instance.HasLua() {
+		g.fail(w, fmt.Errorf("%w: %s", lifecycle.ErrNoLua, id))
+		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
 	if err != nil {
@@ -377,6 +392,8 @@ func (g *Gateway) events(w http.ResponseWriter, r *http.Request) {
 func (g *Gateway) fail(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
+	case errors.Is(err, lifecycle.ErrIncompatible):
+		status = http.StatusBadRequest
 	case errors.Is(err, lifecycle.ErrNotFound), errors.Is(err, lifecycle.ErrNoLua), errors.Is(err, lifecycle.ErrNoWeb):
 		status = http.StatusNotFound
 	case errors.Is(err, lifecycle.ErrConflict), errors.Is(err, lifecycle.ErrNotEnabled), errors.Is(err, lifecycle.ErrNotRunning), errors.Is(err, lua.ErrStopped):

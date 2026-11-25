@@ -3,6 +3,8 @@ package lifecycle
 import "errors"
 
 var (
+	// ErrIncompatible means the package cannot run on this installation host.
+	ErrIncompatible = errors.New("incompatible plugin package")
 	// ErrNotFound means the plugin is not installed.
 	ErrNotFound = errors.New("plugin is not installed")
 	// ErrConflict means a plugin with the same ID is already installed.

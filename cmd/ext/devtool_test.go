@@ -73,7 +73,7 @@ host.app.route("GET", "/hello", function()
   return { body = host.config.get("token") .. ":" .. count .. ":first" }
 end)`
 	writeDevTestFile(t, "lua/init.lua", script)
-	extensionHost, err := host.Open(ctx, host.Options{DataDir: ".godesk-ext"})
+	extensionHost, err := host.Open(ctx, host.Options{DataDir: ".ext"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ end)`
 	if err := extensionHost.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := host.Open(ctx, host.Options{DataDir: ".godesk-ext"})
+	reopened, err := host.Open(ctx, host.Options{DataDir: ".ext"})
 	if err != nil {
 		t.Fatal(err)
 	}

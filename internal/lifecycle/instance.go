@@ -12,6 +12,8 @@ import (
 
 	"github.com/EziosWJ/Extension-Host/internal/lua"
 	"github.com/EziosWJ/Extension-Host/internal/manifest"
+	"github.com/EziosWJ/Extension-Host/internal/native"
+	"github.com/EziosWJ/Extension-Host/internal/serviceaccess"
 	"github.com/EziosWJ/Extension-Host/internal/store"
 )
 
@@ -19,15 +21,19 @@ const eventBuffer = 32
 
 // Instance is one running plugin in this host process.
 type Instance struct {
-	id         string
-	version    string
-	packageDir string
-	luaEntry   string
-	hasLua     bool
-	dataDir    string
-	logPath    string
-	config     func() map[string]any
-	services   *lua.ServicesOptions
+	id          string
+	version     string
+	packageDir  string
+	luaEntry    string
+	hasLua      bool
+	nativeEntry string
+	nativeSpec  *manifest.Native
+	nativeHost  *native.Server
+	process     *native.Process
+	dataDir     string
+	logPath     string
+	config      func() map[string]any
+	services    *serviceaccess.Access
 
 	logger   *slog.Logger
 	logFile  *os.File
@@ -48,7 +54,8 @@ type instanceOptions struct {
 	pluginDir  string
 	logPath    string
 	config     func() map[string]any
-	services   *lua.ServicesOptions
+	services   *serviceaccess.Access
+	nativeHost *native.Server
 }
 
 func newInstance(opts instanceOptions) *Instance {
@@ -58,6 +65,9 @@ func newInstance(opts instanceOptions) *Instance {
 		packageDir:    opts.packageDir,
 		luaEntry:      opts.manifest.Entry.Lua,
 		hasLua:        opts.manifest.Entry.Lua != "",
+		nativeEntry:   opts.manifest.Entry.Native,
+		nativeSpec:    opts.manifest.Native,
+		nativeHost:    opts.nativeHost,
 		dataDir:       filepath.Join(opts.pluginDir, "data"),
 		logPath:       opts.logPath,
 		config:        opts.config,
@@ -68,7 +78,7 @@ func newInstance(opts instanceOptions) *Instance {
 	return instance
 }
 
-// Start opens the plugin database, logger and Lua runtime.
+// Start opens the plugin log and starts its backend.
 func (i *Instance) Start(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Dir(i.logPath), 0o700); err != nil {
 		return fmt.Errorf("create log directory: %w", err)
@@ -81,13 +91,28 @@ func (i *Instance) Start(ctx context.Context) error {
 	i.logger = slog.New(slog.NewTextHandler(file, &slog.HandlerOptions{Level: slog.LevelInfo})).
 		With("plugin", i.id, "version", i.version)
 
-	if !i.hasLua {
+	if !i.hasLua && i.nativeSpec == nil {
 		return nil
 	}
 	if err := os.MkdirAll(i.dataDir, 0o700); err != nil {
 		i.logger.Error("create plugin data directory", "error", err)
 		i.closeLog()
 		return fmt.Errorf("create plugin data directory: %w", err)
+	}
+	if i.nativeSpec != nil {
+		process, err := i.nativeHost.Start(ctx, native.Options{
+			ID: i.id, Executable: filepath.Join(i.packageDir, filepath.FromSlash(i.nativeEntry)),
+			PackageDir: i.packageDir, DataDir: i.dataDir, Config: i.config,
+			Log: file, Services: i.services, Exports: i.nativeSpec.Exports, WebAPI: i.nativeSpec.WebAPI,
+		})
+		if err != nil {
+			i.logger.Error("start native plugin", "error", err)
+			i.closeLog()
+			return err
+		}
+		i.process = process
+		i.logger.Info("native plugin instance started")
+		return nil
 	}
 	business, err := store.OpenBusiness(ctx, filepath.Join(filepath.Dir(i.dataDir), "business.db"))
 	if err != nil {
@@ -120,10 +145,13 @@ func (i *Instance) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop releases the event subscribers, Lua runtime and business database.
+// Stop releases the runtime and resources associated with this instance.
 func (i *Instance) Stop(ctx context.Context) error {
 	i.CloseSubscriptions()
 	var errs []error
+	if i.process != nil {
+		errs = append(errs, i.process.Stop(ctx))
+	}
 	if i.runtime != nil {
 		if err := i.runtime.Stop(ctx); err != nil {
 			i.logger.Error("stop plugin runtime", "error", err)
@@ -152,6 +180,19 @@ func (i *Instance) closeLog() {
 
 // HasLua reports whether the plugin exposes a Lua entry.
 func (i *Instance) HasLua() bool { return i.hasLua }
+
+// Native returns the native runtime, when the plugin has one.
+func (i *Instance) Native() *native.Process { return i.process }
+
+func (i *Instance) runtimeDone() <-chan struct{} {
+	if i.process != nil {
+		return i.process.Done()
+	}
+	if i.runtime != nil {
+		return i.runtime.Done()
+	}
+	return nil
+}
 
 // Handle dispatches an HTTP request to the plugin Lua runtime.
 func (i *Instance) Handle(ctx context.Context, request lua.Request) (lua.Response, error) {

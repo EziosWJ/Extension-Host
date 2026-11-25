@@ -19,10 +19,13 @@ import (
 	"github.com/EziosWJ/Extension-Host/internal/bundle"
 	"github.com/EziosWJ/Extension-Host/internal/gateway"
 	"github.com/EziosWJ/Extension-Host/internal/lifecycle"
-	"github.com/EziosWJ/Extension-Host/internal/lua"
 	"github.com/EziosWJ/Extension-Host/internal/manifest"
+	"github.com/EziosWJ/Extension-Host/internal/serviceaccess"
 	"github.com/EziosWJ/Extension-Host/internal/store"
 )
+
+// Version identifies the Extension Host implementation used by the embedder.
+const Version = manifest.Version
 
 // HostAPIVersion is the plugin Host API version implemented by this module.
 const HostAPIVersion = manifest.HostAPIVersion
@@ -111,6 +114,7 @@ type Plugin struct {
 	Status       Status                 `json:"status"`
 	Error        string                 `json:"error,omitempty"`
 	HasWeb       bool                   `json:"hasWeb"`
+	HasNative    bool                   `json:"hasNative"`
 	HasLua       bool                   `json:"hasLua"`
 	WebPath      string                 `json:"webPath,omitempty"`
 	APIPath      string                 `json:"apiPath,omitempty"`
@@ -332,8 +336,8 @@ func validateServiceGrants(grants map[string]ServiceGrant) error {
 	return nil
 }
 
-func serviceGrantResolver(grants map[string]ServiceGrant, backend services.PluginBackend) func(string, []string) *lua.ServicesOptions {
-	return func(pluginID string, capabilities []string) *lua.ServicesOptions {
+func serviceGrantResolver(grants map[string]ServiceGrant, backend services.PluginBackend) func(string, []string) *serviceaccess.Access {
+	return func(pluginID string, capabilities []string) *serviceaccess.Access {
 		if !declaresCapability(capabilities, "services") {
 			return nil
 		}
@@ -341,9 +345,9 @@ func serviceGrantResolver(grants map[string]ServiceGrant, backend services.Plugi
 		if !ok {
 			return nil
 		}
-		units := make(map[string]lua.ServicePermissions, len(grant.Units))
+		units := make(map[string]serviceaccess.Permissions, len(grant.Units))
 		for _, unit := range grant.Units {
-			permissions := lua.ServicePermissions{}
+			permissions := serviceaccess.Permissions{}
 			for _, action := range grant.Actions {
 				switch action {
 				case "list":
@@ -361,7 +365,7 @@ func serviceGrantResolver(grants map[string]ServiceGrant, backend services.Plugi
 			}
 			units[unit] = permissions
 		}
-		return &lua.ServicesOptions{Backend: backend, Units: units}
+		return &serviceaccess.Access{Backend: backend, Units: units}
 	}
 }
 
@@ -384,6 +388,7 @@ func pluginFromView(view lifecycle.View) Plugin {
 		Error:       view.Error,
 		HasWeb:      view.HasWeb,
 		HasLua:      view.HasLua,
+		HasNative:   view.HasNative,
 		WebPath:     view.WebPath,
 		APIPath:     view.APIPath,
 		EventsPath:  view.EventsPath,

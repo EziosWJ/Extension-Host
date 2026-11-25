@@ -15,6 +15,8 @@ import (
 	"github.com/EziosWJ/Extension-Host/internal/bundle"
 	"github.com/EziosWJ/Extension-Host/internal/lua"
 	"github.com/EziosWJ/Extension-Host/internal/manifest"
+	"github.com/EziosWJ/Extension-Host/internal/native"
+	"github.com/EziosWJ/Extension-Host/internal/serviceaccess"
 	"github.com/EziosWJ/Extension-Host/internal/store"
 )
 
@@ -38,6 +40,7 @@ type View struct {
 	Status       Status                          `json:"status"`
 	Error        string                          `json:"error,omitempty"`
 	HasWeb       bool                            `json:"hasWeb"`
+	HasNative    bool                            `json:"hasNative"`
 	HasLua       bool                            `json:"hasLua"`
 	WebPath      string                          `json:"webPath,omitempty"`
 	APIPath      string                          `json:"apiPath,omitempty"`
@@ -57,7 +60,7 @@ type Options struct {
 	// ServicesForPlugin resolves the service access granted to a plugin. It
 	// receives the plugin ID and the capabilities declared by its manifest. A
 	// nil result means the plugin has no access to host.services.
-	ServicesForPlugin func(pluginID string, manifestCapabilities []string) *lua.ServicesOptions
+	ServicesForPlugin func(pluginID string, manifestCapabilities []string) *serviceaccess.Access
 }
 
 // Manager manages plugin installations and instances.
@@ -68,7 +71,8 @@ type Manager struct {
 	logsDir           string
 	store             *store.Store
 	logger            *slog.Logger
-	servicesForPlugin func(pluginID string, manifestCapabilities []string) *lua.ServicesOptions
+	servicesForPlugin func(pluginID string, manifestCapabilities []string) *serviceaccess.Access
+	native            *native.Server
 
 	mu     sync.Mutex
 	states map[string]*state
@@ -108,6 +112,7 @@ func New(ctx context.Context, opts Options) (*Manager, error) {
 		states:            make(map[string]*state),
 		locks:             make(map[string]*sync.Mutex),
 	}
+	manager.native = native.New(manager.logger, manager.nativeInstance)
 	for _, dir := range []string{manager.dataDir, manager.packagesDir, manager.pluginsDir, manager.logsDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("create host data directory: %w", err)
@@ -121,9 +126,12 @@ func New(ctx context.Context, opts Options) (*Manager, error) {
 		state := &state{record: record, status: StatusStopped}
 		state.logPath = manager.logPath(record.ID, record.Version)
 		parsed, err := manifest.Parse(record.Manifest)
+		if err == nil {
+			err = parsed.CheckCompatibility()
+		}
 		if err != nil {
 			state.status = StatusFailed
-			state.lastError = "stored manifest is invalid: " + err.Error()
+			state.lastError = "stored manifest cannot run: " + err.Error()
 			manager.logger.Error("invalid installed plugin manifest", "plugin", record.ID, "error", err)
 		} else {
 			state.manifest = parsed
@@ -163,6 +171,9 @@ func (m *Manager) Get(id string) (View, bool) {
 
 // Install publishes a validated package and records it as disabled.
 func (m *Manager) Install(ctx context.Context, pkg *bundle.Bundle) (View, error) {
+	if err := checkCompatibility(pkg.Manifest); err != nil {
+		return View{}, err
+	}
 	id := pkg.Manifest.ID
 	lock := m.lockFor(id)
 	lock.Lock()
@@ -442,7 +453,7 @@ func (m *Manager) Close(ctx context.Context) error {
 		}
 		lock.Unlock()
 	}
-	return errors.Join(errs...)
+	return errors.Join(append(errs, m.native.Close())...)
 }
 
 // UpdateConfig validates and merges configuration values.
@@ -493,6 +504,21 @@ func (m *Manager) RunningInstance(id string) (*Instance, error) {
 		return nil, fmt.Errorf("%w: %s", ErrNotRunning, id)
 	}
 	return state.instance, nil
+}
+
+func (m *Manager) nativeInstance(id string) *native.Process {
+	instance, err := m.RunningInstance(id)
+	if err != nil {
+		return nil
+	}
+	return instance.Native()
+}
+
+func checkCompatibility(metadata *manifest.Manifest) error {
+	if err := metadata.CheckCompatibility(); err != nil {
+		return fmt.Errorf("%w: %v", ErrIncompatible, err)
+	}
+	return nil
 }
 
 // WebInfo returns the directory and index file for a plugin web entry.
@@ -552,7 +578,7 @@ func (m *Manager) startLocked(ctx context.Context, state *state) error {
 	logPath := state.logPath
 	m.mu.Unlock()
 
-	var servicesOptions *lua.ServicesOptions
+	var servicesOptions *serviceaccess.Access
 	if m.servicesForPlugin != nil {
 		servicesOptions = m.servicesForPlugin(record.ID, parsed.Capabilities)
 	}
@@ -565,6 +591,7 @@ func (m *Manager) startLocked(ctx context.Context, state *state) error {
 		logPath:    logPath,
 		config:     m.configGetter(state),
 		services:   servicesOptions,
+		nativeHost: m.native,
 	})
 	if err := instance.Start(ctx); err != nil {
 		m.mu.Lock()
@@ -591,14 +618,14 @@ func (m *Manager) startLocked(ctx context.Context, state *state) error {
 	state.startedAt = time.Now().UTC()
 	m.mu.Unlock()
 	m.logger.Info("plugin started", "plugin", record.ID, "version", record.Version)
-	if instance.runtime != nil {
-		go m.watchRuntime(record.ID, state, instance)
+	if done := instance.runtimeDone(); done != nil {
+		go m.watchRuntime(record.ID, state, instance, done)
 	}
 	return nil
 }
 
-func (m *Manager) watchRuntime(id string, state *state, instance *Instance) {
-	<-instance.runtime.Done()
+func (m *Manager) watchRuntime(id string, state *state, instance *Instance, done <-chan struct{}) {
+	<-done
 	lock := m.lockFor(id)
 	lock.Lock()
 	defer lock.Unlock()
@@ -606,8 +633,17 @@ func (m *Manager) watchRuntime(id string, state *state, instance *Instance) {
 	m.mu.Lock()
 	current := state.instance == instance
 	m.mu.Unlock()
-	if current {
-		_ = m.stopLocked(context.Background(), state)
+	if !current {
+		return
+	}
+	_ = m.stopLocked(context.Background(), state)
+	if process := instance.Native(); process != nil {
+		err := process.ExitError()
+		m.mu.Lock()
+		state.status = StatusFailed
+		state.lastError = err.Error()
+		m.mu.Unlock()
+		m.logger.Error("native plugin exited", "plugin", id, "error", err)
 	}
 }
 
@@ -675,13 +711,16 @@ func (m *Manager) viewLocked(state *state) View {
 	if state.manifest != nil {
 		view.HasWeb = state.manifest.Entry.Web != ""
 		view.HasLua = state.manifest.Entry.Lua != ""
+		view.HasNative = state.manifest.Native != nil
 		view.ConfigSchema = state.manifest.Config
 		view.Config = state.manifest.Redacted(view.Config)
 		if view.HasWeb {
 			view.WebPath = "/extensions/" + state.record.ID + "/web/"
 		}
-		if view.HasLua {
+		if view.HasLua || (view.HasNative && state.manifest.Native.WebAPI) {
 			view.APIPath = "/extensions/" + state.record.ID + "/api/"
+		}
+		if view.HasLua {
 			view.EventsPath = "/extensions/" + state.record.ID + "/events"
 		}
 	}

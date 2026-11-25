@@ -249,10 +249,8 @@ function createRow() {
     add("安装时间", formatTime(plugin.installedAt));
     add("本次启动", formatTime(plugin.startedAt));
     if (plugin.hasWeb) add("Web 路径", plugin.webPath, true);
-    if (plugin.hasLua) {
-      add("API 路径", plugin.apiPath, true);
-      add("事件路径", plugin.eventsPath, true);
-    }
+    if (plugin.apiPath) add("API 路径", plugin.apiPath, true);
+    if (plugin.eventsPath) add("事件路径", plugin.eventsPath, true);
     if (plugin.logPath) add("日志路径", plugin.logPath, true);
 
     const nextSchema = JSON.stringify(plugin.configSchema || {});

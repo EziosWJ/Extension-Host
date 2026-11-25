@@ -1,4 +1,4 @@
-// Command godesk-ext runs the standalone GoDesk Extension Host.
+// Command ext runs the standalone GoDesk Extension Host.
 package main
 
 import (
@@ -29,7 +29,7 @@ func main() {
 		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
-		fmt.Fprintln(os.Stderr, "godesk-ext:", err)
+		fmt.Fprintln(os.Stderr, "ext:", err)
 		os.Exit(1)
 	}
 }
@@ -43,6 +43,9 @@ func run(ctx context.Context, args []string) error {
 		return serve(ctx, args[1:])
 	case "run":
 		return runPlugin(ctx, args[1:])
+	case "version":
+		fmt.Fprintln(os.Stdout, host.Version)
+		return nil
 	case "validate":
 		return validate(args[1:])
 	case "pack":
@@ -57,41 +60,42 @@ func run(ctx context.Context, args []string) error {
 		usage(os.Stdout)
 		return nil
 	default:
-		return fmt.Errorf("unknown command %q; run godesk-ext help", args[0])
+		return fmt.Errorf("unknown command %q; run ext help", args[0])
 	}
 }
 
 func usage(out *os.File) {
-	fmt.Fprintf(out, `godesk-ext - standalone GoDesk Extension Host
+	fmt.Fprintf(out, `ext - standalone GoDesk Extension Host
 
 Usage:
-  godesk-ext [flags]                  Start the host and management page
-  godesk-ext serve [flags]            Start the host and management page
-  godesk-ext run <dir|zip> [flags]    Install, enable and serve one plugin
-  godesk-ext validate <dir|zip>       Validate a plugin package
-  godesk-ext pack <dir> [-o file]     Build a plugin ZIP
-  godesk-ext init                     Create a named plugin project folder
-  godesk-ext dev [flags]              Run the current project and reload on save
-  godesk-ext pkg                     Build the current project into dist/
+  ext [flags]                  Start the host and management page
+  ext serve [flags]            Start the host and management page
+  ext run <dir|zip> [flags]    Install, enable and serve one plugin
+  ext version                 Print the Extension Host version
+  ext validate <dir|zip>       Validate a plugin package
+  ext pack <dir> [-o file]     Build a plugin ZIP
+  ext init                     Create a named plugin project folder
+  ext dev [flags]              Run the current project and reload on save
+  ext pkg                      Build the current project into dist/
 
 Serve, run and dev flags:
   --listen string          HTTP listen address (default "127.0.0.1:5001")
   --service-grants string  JSON file granting plugins access to systemd units
 
 Serve and run only:
-  --data-dir string        host data directory (default "./godesk-ext-data")
+  --data-dir string        host data directory (default "./ext-data")
 
 Examples:
-  godesk-ext init
-  godesk-ext dev
-  godesk-ext pkg
-  godesk-ext pack ./examples/hello -o dist/hello.zip
+  ext init
+  ext dev
+  ext pkg
+  ext pack ./examples/hello -o dist/hello.zip
 `)
 }
 
 func serve(ctx context.Context, args []string) error {
 	listen := "127.0.0.1:5001"
-	dataDir := "./godesk-ext-data"
+	dataDir := "./ext-data"
 	grantsFile := ""
 	positional, err := parseFlags(args, []stringFlag{
 		{names: []string{"listen"}, value: &listen},
@@ -122,7 +126,7 @@ func serve(ctx context.Context, args []string) error {
 
 func runPlugin(ctx context.Context, args []string) error {
 	listen := "127.0.0.1:5001"
-	dataDir := "./godesk-ext-data"
+	dataDir := "./ext-data"
 	grantsFile := ""
 	positional, err := parseFlags(args, []stringFlag{
 		{names: []string{"listen"}, value: &listen},
@@ -137,6 +141,9 @@ func runPlugin(ctx context.Context, args []string) error {
 	}
 	pkg, err := loadBundle(positional[0])
 	if err != nil {
+		return err
+	}
+	if err := pkg.Manifest.CheckCompatibility(); err != nil {
 		return err
 	}
 	grants, err := host.LoadServiceGrantsFile(grantsFile)
@@ -180,7 +187,7 @@ func runPlugin(ctx context.Context, args []string) error {
 	if plugin.HasWeb {
 		slog.Info("plugin web entry", "url", "http://"+displayAddress(listen)+plugin.WebPath)
 	}
-	if plugin.HasLua {
+	if plugin.APIPath != "" {
 		slog.Info("plugin API entry", "url", "http://"+displayAddress(listen)+plugin.APIPath)
 	}
 	return serveHost(ctx, extensionHost, listen, dataDir, nil)
@@ -204,7 +211,7 @@ func serveHost(ctx context.Context, extensionHost *host.Host, listen, dataDir st
 	go func() {
 		serveErr <- server.Serve(listener)
 	}()
-	slog.Info("godesk-ext listening", "url", "http://"+displayAddress(listener.Addr().String())+"/", "dataDir", dataDir)
+	slog.Info("ext listening", "url", "http://"+displayAddress(listener.Addr().String())+"/", "dataDir", dataDir)
 
 	select {
 	case err := <-serveErr:
@@ -246,6 +253,13 @@ func validate(args []string) error {
 	if pkg.Manifest.Entry.Lua != "" {
 		entries = append(entries, "lua="+pkg.Manifest.Entry.Lua)
 	}
+	if pkg.Manifest.Native != nil {
+		entries = append(entries, "native="+pkg.Manifest.Entry.Native)
+		fmt.Printf("platform: %s\n", pkg.Manifest.Native.Platform)
+	}
+	if pkg.Manifest.MinHostVersion != "" {
+		fmt.Printf("minimum Extension Host: %s\n", pkg.Manifest.MinHostVersion)
+	}
 	fmt.Printf("plugin: %s (%s) %s\n", pkg.Manifest.Name, pkg.Manifest.ID, pkg.Manifest.Version)
 	fmt.Printf("host api: %d-%d\n", pkg.Manifest.HostAPI.Min, pkg.Manifest.HostAPI.Max)
 	fmt.Printf("entries: %s\n", strings.Join(entries, ", "))
@@ -285,7 +299,7 @@ func pack(args []string) error {
 	}
 	target := output
 	if target == "" {
-		target = filepath.Join("dist", pkg.Manifest.ID+"-"+pkg.Manifest.Version+".zip")
+		target = filepath.Join("dist", pkg.Filename())
 	}
 	absoluteTarget, err := filepath.Abs(target)
 	if err != nil {

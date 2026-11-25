@@ -91,7 +91,7 @@ func initProject(args []string, in io.Reader, out io.Writer) error {
 		_ = os.Remove(name)
 		return err
 	}
-	fmt.Fprintf(out, "项目已创建。进入目录后运行 dev 或 pkg：\n  cd './%s'\n  godesk-ext dev\n",
+	fmt.Fprintf(out, "项目已创建。进入目录后运行 dev 或 pkg：\n  cd './%s'\n  ext dev\n",
 		strings.ReplaceAll(name, "'", "'\\''"))
 	return nil
 }
@@ -130,7 +130,7 @@ func createProject(directory, id, name string, kind projectType) error {
 	}
 	files := map[string][]byte{
 		"manifest.json": append(manifestJSON, '\n'),
-		".gitignore":    []byte("/.godesk-ext/\n/dist/\n"),
+		".gitignore":    []byte("/.ext/\n/dist/\n"),
 	}
 	details := struct {
 		ID   string
@@ -226,7 +226,7 @@ func packageProject(args []string) error {
 	if err != nil {
 		return err
 	}
-	target, err := filepath.Abs(filepath.Join("dist", pkg.Manifest.ID+"-"+pkg.Manifest.Version+".zip"))
+	target, err := filepath.Abs(filepath.Join("dist", pkg.Filename()))
 	if err != nil {
 		return err
 	}

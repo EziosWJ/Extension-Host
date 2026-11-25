@@ -18,18 +18,21 @@ const (
 var (
 	idPattern      = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?)*$`)
 	versionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)
+	methodPattern  = regexp.MustCompile(`^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$`)
 )
 
 // Manifest describes a plugin package.
 type Manifest struct {
-	SchemaVersion int                    `json:"schemaVersion"`
-	ID            string                 `json:"id"`
-	Name          string                 `json:"name"`
-	Version       string                 `json:"version"`
-	HostAPI       HostAPI                `json:"hostApi"`
-	Entry         Entry                  `json:"entry"`
-	Config        map[string]ConfigField `json:"config,omitempty"`
-	Capabilities  []string               `json:"capabilities,omitempty"`
+	SchemaVersion  int                    `json:"schemaVersion"`
+	ID             string                 `json:"id"`
+	Name           string                 `json:"name"`
+	Version        string                 `json:"version"`
+	MinHostVersion string                 `json:"minHostVersion,omitempty"`
+	HostAPI        HostAPI                `json:"hostApi"`
+	Entry          Entry                  `json:"entry"`
+	Config         map[string]ConfigField `json:"config,omitempty"`
+	Capabilities   []string               `json:"capabilities,omitempty"`
+	Native         *Native                `json:"native,omitempty"`
 }
 
 // HostAPI is the inclusive range of Host API versions a plugin supports.
@@ -38,10 +41,18 @@ type HostAPI struct {
 	Max int `json:"max"`
 }
 
-// Entry names the optional web and Lua entry points, relative to the package root.
+// Entry names the optional entry points, relative to the package root.
 type Entry struct {
-	Web string `json:"web,omitempty"`
-	Lua string `json:"lua,omitempty"`
+	Web    string `json:"web,omitempty"`
+	Lua    string `json:"lua,omitempty"`
+	Native string `json:"native,omitempty"`
+}
+
+// Native describes the native executable's platform and optional HTTP surfaces.
+type Native struct {
+	Platform string   `json:"platform"`
+	Exports  []string `json:"exports,omitempty"`
+	WebAPI   bool     `json:"webApi,omitempty"`
 }
 
 // ConfigField describes one configuration value.
@@ -84,16 +95,22 @@ func (m *Manifest) Validate() error {
 	if HostAPIVersion < m.HostAPI.Min || HostAPIVersion > m.HostAPI.Max {
 		return fmt.Errorf("manifest.json: plugin requires host API %d-%d, host provides %d", m.HostAPI.Min, m.HostAPI.Max, HostAPIVersion)
 	}
-	if m.Entry.Web == "" && m.Entry.Lua == "" {
-		return fmt.Errorf("manifest.json: at least one of entry.web or entry.lua is required")
+	if m.Entry.Web == "" && m.Entry.Lua == "" && m.Entry.Native == "" {
+		return fmt.Errorf("manifest.json: at least one of entry.web, entry.lua or entry.native is required")
 	}
-	for name, entry := range map[string]string{"entry.web": m.Entry.Web, "entry.lua": m.Entry.Lua} {
+	for name, entry := range map[string]string{"entry.web": m.Entry.Web, "entry.lua": m.Entry.Lua, "entry.native": m.Entry.Native} {
 		if entry == "" {
 			continue
 		}
 		if !ValidPackagePath(entry) {
 			return fmt.Errorf("manifest.json: %s %q must be a relative path inside the package", name, entry)
 		}
+	}
+	if m.MinHostVersion != "" && !validVersion(m.MinHostVersion) {
+		return fmt.Errorf("manifest.json: invalid minHostVersion %q (want semantic version)", m.MinHostVersion)
+	}
+	if err := m.validateNative(); err != nil {
+		return err
 	}
 	for name, field := range m.Config {
 		if strings.TrimSpace(name) == "" {
@@ -107,6 +124,38 @@ func (m *Manifest) Validate() error {
 		if strings.TrimSpace(capability) == "" {
 			return fmt.Errorf("manifest.json: capabilities contains an empty value")
 		}
+	}
+	return nil
+}
+
+func (m *Manifest) validateNative() error {
+	if m.Entry.Native == "" {
+		if m.Native != nil {
+			return fmt.Errorf("manifest.json: native requires entry.native")
+		}
+		return nil
+	}
+	if m.Entry.Lua != "" || !strings.HasPrefix(m.Entry.Native, "native/") {
+		return fmt.Errorf("manifest.json: entry.native must be inside native/ and cannot be combined with entry.lua")
+	}
+	if m.Entry.Web != "" && !strings.HasPrefix(m.Entry.Web, "web/") {
+		return fmt.Errorf("manifest.json: an entry.web paired with entry.native must be inside web/")
+	}
+	if m.MinHostVersion == "" {
+		return fmt.Errorf("manifest.json: entry.native requires minHostVersion")
+	}
+	if m.Native == nil || (m.Native.Platform != "linux-amd64" && m.Native.Platform != "linux-arm64") {
+		return fmt.Errorf("manifest.json: native.platform must be linux-amd64 or linux-arm64")
+	}
+	if m.Native.WebAPI && m.Entry.Web == "" {
+		return fmt.Errorf("manifest.json: native.webApi requires entry.web")
+	}
+	seen := make(map[string]bool)
+	for _, method := range m.Native.Exports {
+		if len(method) > 128 || !methodPattern.MatchString(method) || seen[method] {
+			return fmt.Errorf("manifest.json: invalid or duplicate native export %q", method)
+		}
+		seen[method] = true
 	}
 	return nil
 }

@@ -1,10 +1,11 @@
 # Extension-Host
 
-GoDesk 的插件宿主。仓库提供公共 Go 模块、独立命令 `godesk-ext`、最小管理界面和示例插件。
+GoDesk 的插件宿主。仓库提供公共 Go 模块、独立命令 `ext`、最小管理界面和示例插件。
 
-当前完成实施 Spec 的工单 01（独立运行闭环）、工单 02（GoDesk 嵌入），以及工单 03 的宿主侧共享 systemd 能力与 `host.services` 授权。GoDesk 原生服务管理的接入随 v0.2.0 发布。`godesk-ext` 支持从模板创建、保存后自动更新和打包。Mihomo 插件与通用自动测试仍由工单 04–05 跟踪。另提供 [PostgreSQL 备份示例](examples/postgres-backup/README.md)，用于验收 Lua 命令执行和同一 ZIP 的双模式行为。
+当前完成实施 Spec 的工单 01（独立运行闭环）、工单 02（GoDesk 嵌入），以及工单 03 的宿主侧共享 systemd 能力与 `host.services` 授权。GoDesk 原生服务管理的接入随 v0.2.0 发布。`ext` 支持从模板创建、保存后自动更新和打包。Mihomo 插件与通用自动测试仍由工单 04–05 跟踪。另提供 [PostgreSQL 备份示例](examples/postgres-backup/README.md)，用于验收 Lua 命令执行和同一 ZIP 的双模式行为。
 
 - 共享契约：[GoDesk 插件首版契约](https://github.com/EziosWJ/GoDesk/blob/main/docs/extensions.md)
+- 原生插件：[打包、运行和调用契约](docs/native-plugins.md)
 - 前端设计：[Extension Host 与插件前端设计规范](docs/frontend-design.md)
 - 实施顺序：[Extension Host 实施 Spec](https://github.com/EziosWJ/GoDesk/blob/main/.scratch/extension-host/spec.md)
 - 进程与仓库边界：[ADR 0009](https://github.com/EziosWJ/GoDesk/blob/main/docs/adr/0009-embed-extension-host-from-separate-module.md)
@@ -12,9 +13,9 @@ GoDesk 的插件宿主。仓库提供公共 Go 模块、独立命令 `godesk-ext
 ## 已实现
 
 - 仅依赖本仓库，使用 `GOWORK=off CGO_ENABLED=0` 构建和运行。
-- `godesk-ext` 默认监听 `127.0.0.1:5001`，提供插件管理页。
+- `ext` 默认监听 `127.0.0.1:5001`，提供插件管理页。
 - 标准 ZIP 的 `pack`、`validate`、`run`；目录和 ZIP 都可运行。
-- Web+Lua、Web-only、Lua-only 三类插件形态。
+- Web、Lua，以及支持 Linux amd64/arm64 的原生可执行插件。原生插件可经本地 Host API 调用其他原生插件和已授权的 systemd 服务。
 - 原生 HTTP 调用 Lua、原生 WebSocket 事件流、插件业务 SQLite。
 - 安装、启用、启动、停止、禁用、卸载、重启恢复，以及保留/清除业务数据。
 - 配置持久化；标记为 `secret` 的值不出现在管理响应和宿主日志中。
@@ -26,7 +27,7 @@ GoDesk 的插件宿主。仓库提供公共 Go 模块、独立命令 `godesk-ext
 ## 构建
 
 ```sh
-GOWORK=off CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/godesk-ext ./cmd/godesk-ext
+GOWORK=off CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/ext ./cmd/ext
 ```
 
 或：
@@ -39,7 +40,7 @@ make build
 
 ```sh
 make examples
-./bin/godesk-ext --data-dir ./godesk-ext-data
+./bin/ext --data-dir ./ext-data
 ```
 
 打开 <http://127.0.0.1:5001/host/>，安装 `dist/com.godesk.hello-0.1.0.zip`，然后点击“启用”。插件页面会通过原生 `fetch` 调用 Lua，通过 WebSocket 接收事件，并把访问次数写入自己的 SQLite。
@@ -47,53 +48,54 @@ make examples
 也可以直接运行源码目录或 ZIP：
 
 ```sh
-./bin/godesk-ext run ./examples/hello --data-dir ./godesk-ext-data
-./bin/godesk-ext run ./dist/com.godesk.hello-0.1.0.zip --data-dir ./godesk-ext-data
+./bin/ext run ./examples/hello --data-dir ./ext-data
+./bin/ext run ./dist/com.godesk.hello-0.1.0.zip --data-dir ./ext-data
 ```
 
 `run` 会安装、启用并启动指定插件，然后提供管理页。若同一 ID 已安装，会先卸载再重新安装：业务数据默认保留，插件配置恢复为 Manifest 默认值。
 
 ## 开发一个插件
 
-安装已发布版本时，将下面的 `<版本标签>` 换成包含这些命令的标签。开发当前源码时，可在本仓库运行 `GOWORK=off CGO_ENABLED=0 go install ./cmd/godesk-ext`。确保 Go 的二进制安装目录在 `PATH` 中。
+安装已发布版本时，将下面的 `<版本标签>` 换成包含这些命令的标签。开发当前源码时，可在本仓库运行 `GOWORK=off CGO_ENABLED=0 go install ./cmd/ext`。确保 Go 的二进制安装目录在 `PATH` 中。
 
 ```sh
-CGO_ENABLED=0 go install github.com/EziosWJ/Extension-Host/cmd/godesk-ext@<版本标签>
+CGO_ENABLED=0 go install github.com/EziosWJ/Extension-Host/cmd/ext@<版本标签>
 ```
 
 ```sh
-godesk-ext init  # 插件名称填写 my-plugin
+ext init  # 插件名称填写 my-plugin
 cd my-plugin
-godesk-ext dev
+ext dev
 ```
 
 `init` 提供「网页 + Lua」「只有网页」「只有 Lua」三种模板。填写插件名称和标识后，工具会在当前目录下创建以插件名称命名的文件夹。生成的 `README.md` 说明各文件的用途和验证方法。项目使用原生网页和 Lua，安装命令后可以直接开始。
 
-打开 `dev` 输出的地址，插件会自动安装并启用。访问 `/` 时，有网页就打开插件，否则打开 `/host/`。保存网页资源后浏览器自动刷新。Lua 或 `manifest.json` 变动后，宿主检查文件并重启插件。更新失败会在终端显示原因，之前能运行的版本会继续提供服务或被重新启动。修改插件标识后重新运行 `dev`。
+打开 `dev` 输出的地址，插件会自动安装并启用。访问 `/` 时，有网页就打开插件，否则打开 `/host/`。保存网页资源后浏览器自动刷新。Lua、`native/` 下的运行产物或 `manifest.json` 变动后，宿主检查文件并重启插件。更新失败会在终端显示原因，之前能运行的版本会继续提供服务或被重新启动。修改插件标识后重新运行 `dev`。
 
-开发用的设置、业务数据和日志保存在项目的 `.godesk-ext/`。它们在重新运行 `dev` 后仍可使用，日志在 `.godesk-ext/logs/`。普通运行时，可在 `/host/` 的「宿主首页」中选择已启用的网页插件。宿主重启后会保留选择，插件暂时不可用时访问 `/` 会打开管理页。
+开发用的设置、业务数据和日志保存在项目的 `.ext/`。它们在重新运行 `dev` 后仍可使用，日志在 `.ext/logs/`。普通运行时，可在 `/host/` 的「宿主首页」中选择已启用的网页插件。宿主重启后会保留选择，插件暂时不可用时访问 `/` 会打开管理页。
 
 在项目根目录另开终端打包：
 
 ```sh
-godesk-ext pkg
+ext pkg
 ```
 
-ZIP 位于 `dist/<插件标识>-<版本>.zip`，内容来自项目根目录的 `manifest.json`、`web/` 和 `lua/`。在 GoDesk 的「扩展」或独立宿主的 `/host/` 中安装同一个 ZIP，启用后验证页面或 Lua 接口。
+ZIP 位于 `dist/<插件标识>-<版本>.zip`，内容来自项目根目录的 `manifest.json`、`web/` 和 `lua/`。原生插件收集 `native/`，ZIP 名附加目标平台，详见 [原生可执行插件首版契约](docs/native-plugins.md)。在 GoDesk 的「扩展」或独立宿主的 `/host/` 中安装同一个 ZIP，启用后验证插件。
 
 ## 命令
 
 | 命令 | 行为 |
 | --- | --- |
-| `godesk-ext` / `godesk-ext serve` | 启动宿主和管理页。参数：`--listen`、`--data-dir`、`--service-grants`。 |
-| `godesk-ext run <dir\|zip>` | 安装、启用并运行一个插件，然后启动宿主。参数同上。 |
-| `godesk-ext validate <dir\|zip>` | 校验 Manifest、入口、Host API 兼容性和包路径。 |
-| `godesk-ext pack <dir> [-o file]` | 校验后打包。默认输出 `dist/<id>-<version>.zip`。 |
-| `godesk-ext init` | 选择模板，并在当前目录下创建以插件名称命名的项目文件夹。 |
-| `godesk-ext dev` | 自动安装并启用当前目录的插件，保存文件后更新。支持 `--listen`、`--service-grants`。 |
-| `godesk-ext pkg` | 校验当前项目并把运行文件打包到 `dist/<id>-<version>.zip`。 |
+| `ext` / `ext serve` | 启动宿主和管理页。参数：`--listen`、`--data-dir`、`--service-grants`。 |
+| `ext run <dir\|zip>` | 安装、启用并运行一个插件，然后启动宿主。参数同上。 |
+| `ext version` | 查看 Extension Host 版本。 |
+| `ext validate <dir\|zip>` | 校验 Manifest、入口、Host API 兼容性和包路径。 |
+| `ext pack <dir> [-o file]` | 校验后打包。默认输出 `dist/<id>-<version>.zip`。 |
+| `ext init` | 选择模板，并在当前目录下创建以插件名称命名的项目文件夹。 |
+| `ext dev` | 自动安装并启用当前目录的插件，保存文件后更新。支持 `--listen`、`--service-grants`。 |
+| `ext pkg` | 校验当前项目并把运行文件打包到 `dist/<id>-<version>.zip`。 |
 
-参数可以放在位置参数前后。`serve` 和 `run` 默认使用 `./godesk-ext-data`，`dev` 使用项目的 `.godesk-ext/`。
+参数可以放在位置参数前后。`serve` 和 `run` 默认使用 `./ext-data`，`dev` 使用项目的 `.ext/`。
 
 ## 插件包
 
@@ -131,6 +133,9 @@ lua/proxies.lua
 | `hostApi` | 兼容的 Host API 闭区间；当前宿主为 `1`。 |
 | `entry.web` | 可选。构建好的 HTML 入口。 |
 | `entry.lua` | 可选。Lua 启动脚本。 |
+| `entry.native` | 可选。`native/` 下的 Linux ELF 可执行入口。 |
+| `native` | 原生插件的目标平台、公开方法和网页 API 声明。 |
+| `minHostVersion` | 最低 Extension Host 版本，原生插件必填。 |
 | `config` | 可选。配置字段类型为 `string`、`number`、`boolean`；`secret` 只用于字符串。 |
 | `capabilities` | 可选。插件声明的能力需求；实际授权由部署配置决定。 |
 
@@ -285,7 +290,7 @@ local text = host.json.encode(payload)
 `elevate` 中的每一项必须同时出现在 `actions` 中。授权在 `host.Open` 时校验，插件 ID 为空、单元名非法、操作未知或越权提权都会返回描述性错误。未出现在授权文件中的插件、未声明 `services` 能力的插件、未列出的单元和未授予的操作都会被拒绝。
 
 ```sh
-./bin/godesk-ext run ./examples/services --service-grants ./service-grants.json --data-dir ./godesk-ext-data
+./bin/ext run ./examples/services --service-grants ./service-grants.json --data-dir ./ext-data
 ```
 
 ### 插件侧接口
@@ -321,8 +326,8 @@ host.services.restart("ssh.service")
 | `PUT /api/v1/extensions/{id}/config` | 合并并校验配置。 |
 | `DELETE /api/v1/extensions/{id}[?purge=true]` | 卸载；`purge=true` 同时删除业务数据。 |
 | `GET /extensions/{id}/web/` | 插件 Web 入口和资源。 |
-| `/extensions/{id}/api/{path}` | Lua 业务路由。 |
-| `GET /extensions/{id}/events` | 浏览器事件 WebSocket。 |
+| `/extensions/{id}/api/{path}` | Lua 业务路由或已声明 `native.webApi` 的原生后端。 |
+| `GET /extensions/{id}/events` | Lua 浏览器事件 WebSocket。 |
 
 插件启用并启动后，Web、API 和事件路由才可用；停止、禁用或启动失败时返回 `409`。管理 API 始终可用。
 
@@ -333,11 +338,11 @@ host.services.restart("ssh.service")
 | 安装 | 校验并发布包，记录安装信息；新插件未启用。同 ID 冲突。 |
 | 启用 | 写入启用意图并启动。启动失败保留意图，状态显示失败原因。 |
 | 启动 | 为已启用插件创建当前进程实例；重复启动收敛为同一实例。 |
-| 停止 | 关闭订阅、Lua 和业务库连接，保留启用意图。 |
+| 停止 | 停止后端，释放订阅和数据库连接，保留启用意图。 |
 | 禁用 | 清除启用意图并停止，宿主重启后不会自动恢复。 |
 | 卸载 | 先停止并释放资源，再删除包、配置和授权；默认保留业务数据。 |
 | 关闭页面 | 只释放该 WebSocket 订阅，插件实例继续运行。 |
-| 关闭宿主 | 停止全部实例，释放 Lua、数据库、订阅和 HTTP 连接。 |
+| 关闭宿主 | 停止全部实例，释放数据库、订阅和 HTTP 连接。 |
 
 数据目录：
 
@@ -378,13 +383,13 @@ GOWORK=off CGO_ENABLED=0 go test ./...
 make check
 ```
 
-集成测试覆盖安装、启用、HTTP、WebSocket、SQLite 持久化、宿主重启恢复、停止/禁用意图、启动失败重试、配置脱敏、Web-only/Lua-only、非法包错误，以及服务授权的列表过滤、单元级拒绝、能力校验和后端错误传播。
+集成测试覆盖安装、启用、HTTP、WebSocket、SQLite 持久化、宿主重启恢复、停止/禁用意图、启动失败重试、配置脱敏、Web-only/Lua-only、非法包错误，服务授权的列表过滤、单元级拒绝、能力校验和后端错误传播，以及原生进程的就绪、插件互调、超时、停机与恢复。
 
 ## 安全模型
 
-首版面向部署者主动信任并安装的插件。插件 Web 页面与宿主同源；Lua 与宿主同进程，标准文件 I/O 使用宿主运行账号权限。能力授权约束通过 Host API 发起的操作，不限制插件直接使用的文件权限。
+首版面向部署者主动信任并安装的插件。插件 Web 页面与宿主同源；Lua 与宿主同进程，原生插件以同一宿主账号作为子进程运行。能力授权约束通过 Host API 发起的操作，不限制插件直接使用的文件权限。
 
-`godesk-ext` 默认只监听回环地址且没有登录。不要在没有额外访问控制的情况下把它绑定到公网接口。
+`ext` 默认只监听回环地址且没有登录。不要在没有额外访问控制的情况下把它绑定到公网接口。
 
 ## 后续阶段
 

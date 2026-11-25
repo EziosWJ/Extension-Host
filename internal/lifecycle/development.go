@@ -14,6 +14,9 @@ import (
 
 // ReloadDevelopment publishes an updated source snapshot and keeps the plugin's data.
 func (m *Manager) ReloadDevelopment(ctx context.Context, pkg *bundle.Bundle, webOnly bool) error {
+	if err := checkCompatibility(pkg.Manifest); err != nil {
+		return err
+	}
 	id := pkg.Manifest.ID
 	lock := m.lockFor(id)
 	lock.Lock()

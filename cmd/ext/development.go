@@ -71,7 +71,7 @@ func develop(ctx context.Context, args []string) error {
 		return err
 	}
 
-	dataDir := filepath.Join(project, ".godesk-ext")
+	dataDir := filepath.Join(project, ".ext")
 	extensionHost, err := host.Open(ctx, host.Options{DataDir: dataDir, ServiceGrants: grants})
 	if err != nil {
 		return err
@@ -91,7 +91,7 @@ func develop(ctx context.Context, args []string) error {
 			slog.Error("could not start the installed development plugin", "error", err)
 		}
 	}
-	if pkg.Manifest.Entry.Lua != "" {
+	if pkg.Manifest.Entry.Lua != "" || (pkg.Manifest.Native != nil && pkg.Manifest.Native.WebAPI) {
 		slog.Info("development plugin API", "path", "/extensions/"+dev.id+"/api/")
 	}
 	return serveHost(ctx, extensionHost, listen, dataDir, dev)
@@ -149,7 +149,7 @@ func (d *developmentSession) watch(ctx context.Context) func() {
 
 func (d *developmentSession) apply(ctx context.Context, pkg *bundle.Bundle) {
 	if pkg.Manifest.ID != d.id {
-		slog.Error("development plugin ID changed; restart godesk-ext dev", "plugin", pkg.Manifest.ID)
+		slog.Error("development plugin ID changed; restart ext dev", "plugin", pkg.Manifest.ID)
 		return
 	}
 	files := make(map[string][sha256.Size]byte, len(pkg.Files))
@@ -235,7 +235,7 @@ func sameNonWebFiles(previous, next map[string][sha256.Size]byte) bool {
 
 func projectStamp(project string) (map[string]fileStamp, error) {
 	stamp := make(map[string]fileStamp)
-	for _, name := range []string{"manifest.json", "web", "lua"} {
+	for _, name := range []string{"manifest.json", "web", "lua", "native"} {
 		root := filepath.Join(project, name)
 		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 			if path == root && errors.Is(err, fs.ErrNotExist) {

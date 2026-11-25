@@ -1,10 +1,10 @@
-BIN := bin/godesk-ext
+BIN := bin/ext
 DIST := dist
 
 .PHONY: build test vet check examples run clean
 
-build: ## 构建 godesk-ext
-	GOWORK=off CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(BIN) ./cmd/godesk-ext
+build: ## 构建 ext
+	GOWORK=off CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(BIN) ./cmd/ext
 
 test: ## 运行全部测试
 	GOWORK=off CGO_ENABLED=0 go test ./...
@@ -24,7 +24,7 @@ examples: build ## 打包示例插件
 	$(BIN) pack ./examples/postgres-backup/plugin -o $(DIST)/com.godesk.postgres-backup-0.4.0.zip
 
 run: build ## 运行 Hello 示例
-	$(BIN) run ./examples/hello --data-dir ./godesk-ext-data
+	$(BIN) run ./examples/hello --data-dir ./ext-data
 
 clean: ## 清理构建产物
 	rm -rf bin $(DIST)

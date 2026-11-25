@@ -40,4 +40,4 @@ jobs:
         env:
           GOWORK: "off"
           CGO_ENABLED: "0"
-        run: go build -trimpath -o godesk-ext ./cmd/godesk-ext
+        run: go build -trimpath -o ext ./cmd/ext

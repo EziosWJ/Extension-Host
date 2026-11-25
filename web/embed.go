@@ -1,4 +1,4 @@
-// Package web serves the standalone godesk-ext management page.
+// Package web serves the standalone ext management page.
 package web
 
 import (

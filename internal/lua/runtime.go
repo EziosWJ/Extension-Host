@@ -66,6 +66,8 @@ type Runtime struct {
 
 	processExits chan processExit
 	processes    sync.WaitGroup
+	execCtx      context.Context
+	cancelExec   context.CancelFunc
 
 	scheduler     *schedule.Scheduler
 	schedules     map[string]*scheduleEntry
@@ -109,6 +111,7 @@ func New(opts Options) *Runtime {
 		opts.Logger = slog.Default()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	execCtx, cancelExec := context.WithCancel(ctx)
 	return &Runtime{
 		opts:          opts,
 		entryDir:      filepath.Dir(opts.EntryPath),
@@ -118,6 +121,8 @@ func New(opts Options) *Runtime {
 		ready:         make(chan error, 1),
 		done:          make(chan struct{}),
 		processExits:  make(chan processExit),
+		execCtx:       execCtx,
+		cancelExec:    cancelExec,
 		schedules:     make(map[string]*scheduleEntry),
 		scheduleFires: make(chan scheduleFire),
 		routes:        make(map[string]*glua.LFunction),
@@ -178,6 +183,9 @@ func (r *Runtime) Handle(ctx context.Context, req Request) (Response, error) {
 func (r *Runtime) Stop(ctx context.Context) error {
 	var stopErr error
 	r.stop.Do(func() {
+		// A synchronous command can be holding the Lua goroutine that
+		// receives the stop request.
+		r.cancelExec()
 		reply := make(chan result, 1)
 		sent := false
 		select {

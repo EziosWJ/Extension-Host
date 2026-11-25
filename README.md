@@ -196,6 +196,21 @@ end)
 - 完成回调和 HTTP 处理器在同一个 Lua 实例中串行运行。结果包含 `pid`、`exitCode`、`stderr`，等待出错时还包含 `error`。标准输出默认丢弃，标准错误最多保留开头 64 KiB，截断时提供 `stderrTruncated`。
 - 停止插件会终止其子进程。退出后由插件在下次启动时恢复自己的业务状态。
 
+```lua
+local result, err = host.process.exec("sort", {}, {
+  stdin = "pear\napple\n",
+  timeoutMs = 2000,
+})
+if result and result.exitCode == 0 then
+  print(result.stdout)
+end
+```
+
+- `exec(program, args[, options])` 以宿主账号执行命令，逐项传入字符串参数。它会等命令退出，占用当前插件的 Lua goroutine。其他插件和宿主可继续运行。
+- `options.stdin` 为送入标准输入的字符串，省略时子进程读取到 EOF。`options.timeoutMs` 为正整数毫秒数，默认 30000。超时或停止插件会取消正在执行的命令。插件进入停止流程后，`exec` 返回启动失败，包括在停止钩子里发起的调用。
+- 结果表包含 `exitCode`、`stdout`、`stderr`、`stdoutTruncated`、`stderrTruncated` 和 `timedOut`。标准输出和标准错误各保留开头 64 KiB。命令以非零状态退出时仍返回结果表，因信号终止时 `exitCode` 为 `-1`。
+- 启动失败返回 `nil, error`，等待或读取输出失败时在结果表中提供 `error`。参数类型或取值无效时抛出 Lua 参数错误。
+
 ### `host.schedule`
 
 ```lua

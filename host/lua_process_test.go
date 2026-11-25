@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -192,5 +193,109 @@ func TestLuaAsyncProcessReturnsBeforeExitAndStopsWithPlugin(t *testing.T) {
 	}
 	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
 		t.Fatalf("process still present after plugin stop: %v", err)
+	}
+}
+
+func TestLuaSyncProcessExec(t *testing.T) {
+	ctx := testContext(t)
+	extensionHost, root := newTestHost(t, ctx)
+	plugin := installPackage(t, ctx, extensionHost, `{
+		"schemaVersion": 1, "id": "test.lua.exec", "name": "Exec test",
+		"version": "1.0.0", "hostApi": {"min": 1, "max": 1},
+		"entry": {"lua": "init.lua"}
+	}`, map[string]string{"init.lua": `
+		local exec = host.process.exec
+		host.app.route("GET", "/result", function()
+			local result = assert(exec("sh", {"-c", 'cat; printf "%s" "$1" >&2; exit 17', "sh", "with spaces ;"}, {
+				stdin = "input\000bytes\n",
+			}))
+			assert(result.exitCode == 17 and result.stdout == "input\000bytes\n" and result.stderr == "with spaces ;")
+			assert(result.stdoutTruncated == false and result.stderrTruncated == false and result.timedOut == false)
+			assert(result.error == nil)
+			result = assert(exec("cat", {}))
+			assert(result.exitCode == 0 and result.stdout == "" and result.stderr == "")
+			return {body = "ok"}
+		end)
+		host.app.route("GET", "/limits", function()
+			local result = assert(exec("sh", {"-c", "head -c 65536 /dev/zero; head -c 65537 /dev/zero >&2"}))
+			assert(result.exitCode == 0, result.stderr)
+			assert(result.stdout == string.rep("\000", 65536) and result.stdoutTruncated == false)
+			assert(result.stderr == result.stdout and result.stderrTruncated == true)
+			result = assert(exec("head", {"-c", "65537", "/dev/zero"}))
+			assert(#result.stdout == 65536 and result.stdoutTruncated == true and result.stderrTruncated == false)
+			return {body = "ok"}
+		end)
+		host.app.route("GET", "/timeout", function()
+			local result = assert(exec("sh", {"-c", 'printf started; sleep 30 & wait'}, {timeoutMs = 500}))
+			assert(result.timedOut and result.exitCode == -1 and result.stdout == "started")
+			return {body = "ok"}
+		end)
+		host.app.route("GET", "/invalid", function()
+			local result, err = exec("/nonexistent/extension-host/command", {})
+			assert(result == nil and type(err) == "string")
+			assert(not pcall(exec, 123, {}))
+			assert(not pcall(exec, "cat", {"one", [3] = "three"}))
+			assert(not pcall(exec, "cat", {"one", extra = "two"}))
+			assert(not pcall(exec, "cat", {123}))
+			assert(not pcall(exec, "cat", {}, {stdin = false}))
+			assert(not pcall(exec, "cat", {}, {timeoutMs = 0}))
+			assert(not pcall(exec, "cat", {}, {timeoutMs = 1.5}))
+			assert(not pcall(exec, "cat", {}, {timeoutMs = "1000"}))
+			assert(not pcall(exec, "cat", {}, {timeoutMs = math.huge}))
+			return {body = "ok"}
+		end)
+		host.app.route("GET", "/wait", function()
+			exec("sh", {"-c", 'printf "%s\n" "$$" > "$1"; exec sleep 30', "sh", host.dataDir .. "/exec.pid"})
+			return {}
+		end)
+		host.app.on("stop", function()
+			assert(io.open(host.dataDir .. "/stop-hook", "w")):close()
+		end)
+	`})
+	if err := extensionHost.Enable(ctx, plugin.ID); err != nil {
+		t.Fatal(err)
+	}
+	handler := extensionHost.Handler(host.HTTPOptions{})
+	call := func(path string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequestWithContext(ctx, http.MethodGet, plugin.APIPath+path, nil))
+		return response
+	}
+	for _, path := range []string{"result", "limits", "timeout", "invalid"} {
+		t.Run(path, func(t *testing.T) {
+			if response := call(path); response.Code != http.StatusOK || response.Body.String() != "ok" {
+				t.Fatalf("response = %d, %q", response.Code, response.Body)
+			}
+		})
+	}
+
+	dataDir := filepath.Join(root, "plugins", plugin.ID, "data")
+	response := make(chan *httptest.ResponseRecorder, 1)
+	go func() { response <- call("wait") }()
+	var pid int
+	deadline := time.Now().Add(2 * time.Second)
+	for pid == 0 {
+		data, _ := os.ReadFile(filepath.Join(dataDir, "exec.pid"))
+		pid, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+		if time.Now().After(deadline) {
+			t.Fatalf("exec did not write a PID to %s", dataDir)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	stopCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := extensionHost.Stop(stopCtx, plugin.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("process still present after plugin stop: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "stop-hook")); err != nil {
+		t.Fatalf("stop hook did not run: %v", err)
+	}
+	select {
+	case <-response:
+	case <-ctx.Done():
+		t.Fatal("request did not return after stopping the plugin")
 	}
 }

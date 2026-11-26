@@ -2,9 +2,11 @@ package lua
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -313,13 +315,53 @@ func (r *Runtime) servicesModule(L *glua.LState) *glua.LTable {
 		L.Push(serviceDetailTable(L, detail))
 		return 1
 	}))
-	module.RawSetString("restart", L.NewFunction(func(L *glua.LState) int {
+	for name, action := range map[string]func(context.Context, string, bool) error{
+		"start": options.Start, "stop": options.Stop, "restart": options.Restart,
+	} {
+		module.RawSetString(name, L.NewFunction(func(L *glua.LState) int {
+			L.CheckType(1, glua.LTString)
+			unit := L.CheckString(1)
+			sudo := false
+			if L.Get(2) != glua.LNil {
+				if value := L.CheckTable(2).RawGetString("sudo"); value != glua.LNil {
+					enabled, ok := value.(glua.LBool)
+					if !ok {
+						L.ArgError(2, "sudo 必须是布尔值")
+						return 0
+					}
+					sudo = bool(enabled)
+				}
+			}
+			if err := action(r.ctx, unit, sudo); err != nil {
+				L.RaiseError("%s", serviceError("host.services."+name, err))
+				return 0
+			}
+			L.Push(glua.LTrue)
+			return 1
+		}))
+	}
+	module.RawSetString("logs", L.NewFunction(func(L *glua.LState) int {
+		L.CheckType(1, glua.LTString)
 		unit := L.CheckString(1)
-		if err := options.Restart(r.ctx, unit); err != nil {
-			L.RaiseError("%s", serviceError("host.services.restart", err))
+		lines := serviceaccess.DefaultLogLines
+		if value := L.Get(2); value != glua.LNil {
+			number, ok := value.(glua.LNumber)
+			if !ok || number < 1 || number > serviceaccess.MaxLogLines || float64(number) != math.Trunc(float64(number)) {
+				L.ArgError(2, fmt.Sprintf("lines 必须是 1 到 %d 之间的整数", serviceaccess.MaxLogLines))
+				return 0
+			}
+			lines = int(number)
+		}
+		items, err := options.Logs(r.ctx, unit, lines)
+		if err != nil {
+			L.RaiseError("%s", serviceError("host.services.logs", err))
 			return 0
 		}
-		L.Push(glua.LTrue)
+		result := newArrayTable(L)
+		for _, item := range items {
+			result.Append(glua.LString(item))
+		}
+		L.Push(result)
 		return 1
 	}))
 	return module
@@ -361,10 +403,6 @@ func serviceDetailTable(L *glua.LState, detail services.ServiceDetail) *glua.LTa
 }
 
 func serviceError(caller string, err error) string {
-	var accessErr *serviceaccess.Error
-	if errors.As(err, &accessErr) {
-		return accessErr.Message
-	}
 	var serviceErr *services.Error
 	if errors.As(err, &serviceErr) {
 		return fmt.Sprintf("%s: %s: %s", caller, serviceErr.Code, serviceErr.Message)
@@ -380,7 +418,7 @@ func unavailableModule(L *glua.LState, module, function string) *glua.LTable {
 
 func unavailable(module, function string) glua.LGFunction {
 	return func(L *glua.LState) int {
-		L.RaiseError("%s.%s is not authorized: no capability grant is configured", module, function)
+		L.RaiseError("%s.%s is not implemented", module, function)
 		return 0
 	}
 }

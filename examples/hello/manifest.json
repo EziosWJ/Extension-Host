@@ -8,6 +8,5 @@
   "config": {
     "greeting": { "type": "string", "default": "你好" },
     "token": { "type": "string", "secret": true }
-  },
-  "capabilities": ["storage"]
+  }
 }

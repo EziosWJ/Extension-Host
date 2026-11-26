@@ -160,7 +160,13 @@ function configForm(plugin) {
     const label = element("label", field.type === "boolean" ? "check" : "field");
     const input = document.createElement("input");
     input.type = field.type === "boolean" ? "checkbox" : field.secret ? "password" : field.type;
-    if (input.type === "number") input.step = "any";
+    input.required = Boolean(field.required && !field.secret && input.type !== "checkbox");
+    if (input.type === "number") {
+      input.step = field.format === "integer" ? "1" : "any";
+      if (field.min != null) input.min = field.min;
+      if (field.max != null) input.max = field.max;
+    }
+    if (field.format === "writable-directory") input.placeholder = "留空使用插件数据目录";
     if (input.type === "password") {
       input.placeholder = "留空保留现有值";
       input.autocomplete = "new-password";
@@ -241,7 +247,22 @@ function createRow() {
   const panel = element("dialog", "plugin-dialog");
   const panelHeader = element("div", "panel-header");
   const panelTitle = element("h2");
-  const close = actionButton("关闭", "", () => panel.close());
+  const close = actionButton("关闭", "", () => void closePanel());
+  async function closePanel() {
+    if (!panel.open || panel.hasAttribute("data-closing")) return;
+    panel.style.setProperty("--panel-close-from", getComputedStyle(panel).transform);
+    panel.style.setProperty("--panel-scrim-close-from", getComputedStyle(panel, "::backdrop").opacity);
+    panel.setAttribute("data-closing", "");
+    await Promise.allSettled(panel.getAnimations().map((motion) => motion.finished));
+    if (panel.open) panel.close();
+    panel.removeAttribute("data-closing");
+    panel.style.removeProperty("--panel-close-from");
+    panel.style.removeProperty("--panel-scrim-close-from");
+  }
+  panel.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    void closePanel();
+  });
   panelHeader.append(panelTitle, close);
   const body = element("div", "panel-body");
   const status = element("p", "feedback");
@@ -268,6 +289,7 @@ function createRow() {
   function update(plugin) {
     title.textContent = plugin.name;
     panelTitle.textContent = plugin.name;
+    panel.setAttribute("aria-label", plugin.name);
     version.textContent = `v${plugin.version}`;
     badge.dataset.state = plugin.enabled ? plugin.status : "disabled";
     badge.textContent = plugin.enabled ? statusLabels[plugin.status] || plugin.status : "未启用";

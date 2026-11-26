@@ -5,11 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,8 +29,9 @@ const (
 
 // Server owns the Unix listener and the identity of each child instance.
 type Server struct {
-	logger *slog.Logger
-	lookup func(id string) *Process
+	logger   *slog.Logger
+	lookup   func(id string) *Process
+	services *serviceaccess.Access
 
 	mu       sync.Mutex
 	dir      string
@@ -37,8 +41,8 @@ type Server struct {
 }
 
 // New creates a server which listens when its first native instance starts.
-func New(logger *slog.Logger, lookup func(id string) *Process) *Server {
-	return &Server{logger: logger, lookup: lookup, sessions: make(map[string]*Process)}
+func New(logger *slog.Logger, lookup func(id string) *Process, serviceAPI *serviceaccess.Access) *Server {
+	return &Server{logger: logger, lookup: lookup, services: serviceAPI, sessions: make(map[string]*Process)}
 }
 
 func (s *Server) register(p *Process) (string, error) {
@@ -79,7 +83,10 @@ func (s *Server) listen() error {
 	mux.HandleFunc("GET /v1/context", s.pluginContext)
 	mux.HandleFunc("GET /v1/services", s.list)
 	mux.HandleFunc("GET /v1/services/{unit}", s.detail)
-	mux.HandleFunc("POST /v1/services/{unit}/restart", s.restart)
+	mux.HandleFunc("POST /v1/services/{unit}/start", serviceAction(s.services.Start))
+	mux.HandleFunc("POST /v1/services/{unit}/stop", serviceAction(s.services.Stop))
+	mux.HandleFunc("POST /v1/services/{unit}/restart", serviceAction(s.services.Restart))
+	mux.HandleFunc("GET /v1/services/{unit}/logs", s.logs)
 	mux.HandleFunc("POST /v1/plugins/{id}/methods/{method}", s.call)
 	server := &http.Server{
 		Handler:           s.authenticate(mux),
@@ -171,16 +178,19 @@ func (s *Server) pluginContext(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
-	items, err := caller(r).options.Services.List(r.Context())
+	items, err := s.services.List(r.Context())
 	if err != nil {
 		writeServiceError(w, err)
 		return
+	}
+	if items == nil {
+		items = []services.Service{}
 	}
 	writeJSON(w, http.StatusOK, items)
 }
 
 func (s *Server) detail(w http.ResponseWriter, r *http.Request) {
-	item, err := caller(r).options.Services.Detail(r.Context(), r.PathValue("unit"))
+	item, err := s.services.Detail(r.Context(), r.PathValue("unit"))
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -188,27 +198,62 @@ func (s *Server) detail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
-func (s *Server) restart(w http.ResponseWriter, r *http.Request) {
-	if err := caller(r).options.Services.Restart(r.Context(), r.PathValue("unit")); err != nil {
+func serviceAction(action func(context.Context, string, bool) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		query, err := url.ParseQuery(r.URL.RawQuery)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_query", "查询参数格式无效")
+			return
+		}
+		sudo := false
+		if values := query["sudo"]; len(values) > 0 {
+			if len(values) != 1 || (values[0] != "true" && values[0] != "false") {
+				writeError(w, http.StatusBadRequest, "invalid_sudo", "sudo 必须是 true 或 false，且只能提供一次")
+				return
+			}
+			sudo = values[0] == "true"
+		}
+		if err := action(r.Context(), r.PathValue("unit"), sudo); err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_query", "查询参数格式无效")
+		return
+	}
+	lines := serviceaccess.DefaultLogLines
+	if values := query["lines"]; len(values) > 0 {
+		lines, err = strconv.Atoi(values[0])
+		if err != nil || len(values) != 1 || lines < 1 || lines > serviceaccess.MaxLogLines {
+			writeError(w, http.StatusBadRequest, "invalid_lines", fmt.Sprintf("lines 必须是 1 到 %d 之间的整数，且只能提供一次", serviceaccess.MaxLogLines))
+			return
+		}
+	}
+	items, err := s.services.Logs(r.Context(), r.PathValue("unit"), lines)
+	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	if items == nil {
+		items = []string{}
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 func writeServiceError(w http.ResponseWriter, err error) {
-	var accessErr *serviceaccess.Error
 	var serviceErr *services.Error
 	switch {
-	case errors.As(err, &accessErr):
-		status := http.StatusBadRequest
-		if accessErr.Code == "forbidden" {
-			status = http.StatusForbidden
-		}
-		writeError(w, status, accessErr.Code, accessErr.Message)
 	case errors.As(err, &serviceErr):
 		status := http.StatusBadGateway
 		switch serviceErr.Code {
+		case "invalid_unit":
+			status = http.StatusBadRequest
 		case "not_found":
 			status = http.StatusNotFound
 		case "permission":

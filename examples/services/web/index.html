@@ -11,12 +11,12 @@
     <header>
       <p class="eyebrow">GoDesk Extension</p>
       <h1>Systemd 服务</h1>
-      <p class="lede">这个页面通过 <code>host.services</code> 读取和重启部署者授权的 systemd 单元。未授权的单元和操作会被宿主拒绝。</p>
+      <p class="lede">重启服务时使用宿主运行账号的系统权限。</p>
     </header>
 
     <section class="card">
       <div class="card-head">
-        <h2>已授权服务</h2>
+        <h2>服务列表</h2>
         <button id="refresh" type="button" class="ghost">刷新列表</button>
       </div>
       <p id="list-status" class="muted">尚未加载。</p>

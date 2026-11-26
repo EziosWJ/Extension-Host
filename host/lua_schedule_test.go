@@ -67,9 +67,14 @@ func TestLuaScheduleRunsAndSurvivesRestart(t *testing.T) {
 			host.storage.set("ticks", tostring(n))
 		end
 		host.app.on("start", function()
+			assert(host.schedule.validate("@every 20ms"))
+			assert(host.schedule.next("tick") == nil)
 			assert(host.schedule.register("tick", "@every 20ms", tick))
 		end)
-		host.app.route("GET", "/ticks", function() return { body = host.storage.get("ticks") or "0" } end)
+		host.app.route("GET", "/ticks", function()
+			assert(type(host.schedule.next("tick")) == "string")
+			return { body = host.storage.get("ticks") or "0" }
+		end)
 	`})
 	if err := extensionHost.Enable(ctx, plugin.ID); err != nil {
 		t.Fatal(err)
@@ -109,7 +114,9 @@ func TestLuaScheduleRejectsInvalidExpression(t *testing.T) {
 		"entry": {"lua": "init.lua"}
 	}`, map[string]string{"init.lua": `
 		host.app.route("GET", "/register", function()
+			local valid, validation_error = host.schedule.validate("not a schedule")
 			local ok, err = host.schedule.register("bad", "not a schedule", function() end)
+			assert(valid == nil and validation_error == err)
 			assert(ok == nil)
 			assert(type(err) == "string" and #err > 0)
 			return { body = host.json.encode({ ok = false, error = err }) }

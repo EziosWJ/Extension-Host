@@ -1,4 +1,4 @@
-// Package serviceaccess applies a plugin's grants to the systemd backend.
+// Package serviceaccess validates service requests from plugin Host APIs.
 package serviceaccess
 
 import (
@@ -8,93 +8,58 @@ import (
 	"github.com/EziosWJ/Extension-Host/hostsys/services"
 )
 
-// Access resolves the service operations available to one plugin.
+const (
+	DefaultLogLines = 200
+	MaxLogLines     = 2000
+)
+
+// Access is the shared service backend with validation for plugin-supplied unit names.
 type Access struct {
 	Backend services.PluginBackend
-	Units   map[string]Permissions
 }
-
-// Permissions lists the operations granted for one unit.
-type Permissions struct {
-	List            bool
-	Get             bool
-	Restart         bool
-	RestartElevated bool
-}
-
-// Error describes an invalid request or a missing grant.
-type Error struct {
-	Code    string
-	Message string
-}
-
-func (e *Error) Error() string { return e.Message }
 
 func (a *Access) List(ctx context.Context) ([]services.Service, error) {
-	const operation = "host.services.list"
-	if a == nil {
-		return nil, noCapability(operation)
-	}
-	granted := false
-	for _, permissions := range a.Units {
-		if permissions.List {
-			granted = true
-			break
-		}
-	}
-	if !granted {
-		return nil, &Error{"forbidden", operation + " is not authorized: no service grant is configured"}
-	}
-	items, err := a.Backend.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]services.Service, 0, len(items))
-	for _, item := range items {
-		if a.Units[item.Name].List {
-			result = append(result, item)
-		}
-	}
-	return result, nil
+	return a.Backend.List(ctx)
 }
 
 func (a *Access) Detail(ctx context.Context, unit string) (services.ServiceDetail, error) {
-	const operation = "host.services.get"
-	if err := a.validateUnit(operation, unit); err != nil {
+	if err := validateUnit(unit); err != nil {
 		return services.ServiceDetail{}, err
-	}
-	if !a.Units[unit].Get {
-		return services.ServiceDetail{}, denied(operation, unit)
 	}
 	return a.Backend.Detail(ctx, unit)
 }
 
-func (a *Access) Restart(ctx context.Context, unit string) error {
-	const operation = "host.services.restart"
-	if err := a.validateUnit(operation, unit); err != nil {
+func (a *Access) Start(ctx context.Context, unit string, sudo bool) error {
+	if err := validateUnit(unit); err != nil {
 		return err
 	}
-	permissions := a.Units[unit]
-	if !permissions.Restart {
-		return denied(operation, unit)
-	}
-	return a.Backend.Restart(ctx, unit, permissions.RestartElevated)
+	return a.Backend.Start(ctx, unit, sudo)
 }
 
-func (a *Access) validateUnit(operation, unit string) error {
-	if a == nil {
-		return noCapability(operation)
+func (a *Access) Stop(ctx context.Context, unit string, sudo bool) error {
+	if err := validateUnit(unit); err != nil {
+		return err
 	}
-	if !services.ValidUnit(unit) {
-		return &Error{"invalid_unit", fmt.Sprintf("%s: invalid unit %q", operation, unit)}
-	}
-	return nil
+	return a.Backend.Stop(ctx, unit, sudo)
 }
 
-func noCapability(operation string) error {
-	return &Error{"forbidden", operation + " is not authorized: no capability grant is configured"}
+func (a *Access) Restart(ctx context.Context, unit string, sudo bool) error {
+	if err := validateUnit(unit); err != nil {
+		return err
+	}
+	return a.Backend.Restart(ctx, unit, sudo)
 }
 
-func denied(operation, unit string) error {
-	return &Error{"forbidden", fmt.Sprintf("%s is not authorized for unit %s", operation, unit)}
+func (a *Access) Logs(ctx context.Context, unit string, lines int) ([]string, error) {
+	if err := validateUnit(unit); err != nil {
+		return nil, err
+	}
+	return a.Backend.Logs(ctx, unit, lines)
+}
+
+func validateUnit(unit string) error {
+	if services.ValidUnit(unit) {
+		return nil
+	}
+	return &services.Error{Code: "invalid_unit", Message: fmt.Sprintf("invalid unit %q", unit)}
 }

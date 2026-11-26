@@ -2,7 +2,7 @@
 
 GoDesk 的插件宿主。仓库提供公共 Go 模块、独立命令 `ext`、最小管理界面和示例插件。
 
-当前完成实施 Spec 的工单 01（独立运行闭环）、工单 02（GoDesk 嵌入），以及工单 03 的宿主侧共享 systemd 能力与 `host.services` 授权。GoDesk 原生服务管理的接入随 v0.2.0 发布。`ext` 支持从模板创建、保存后自动更新和打包。Mihomo 插件与通用自动测试仍由工单 04–05 跟踪。另提供 [PostgreSQL 备份示例](examples/postgres-backup/README.md)，用于验收 Lua 命令执行和同一 ZIP 的双模式行为。
+当前完成实施 Spec 的工单 01（独立运行闭环）、工单 02（GoDesk 嵌入），以及工单 03 的宿主侧共享 systemd 能力与 `host.services` 接口。GoDesk 原生服务管理的接入随 v0.2.0 发布。`ext` 支持从模板创建、保存后自动更新和打包。Mihomo 插件与通用自动测试仍由工单 04–05 跟踪。另提供 [PostgreSQL 备份示例](examples/postgres-backup/README.md)，用于验收 Lua 命令执行和同一 ZIP 的双模式行为。
 
 - 共享契约：[GoDesk 插件首版契约](https://github.com/EziosWJ/GoDesk/blob/main/docs/extensions.md)
 - 原生插件：[打包、运行和调用契约](docs/native-plugins.md)
@@ -15,14 +15,14 @@ GoDesk 的插件宿主。仓库提供公共 Go 模块、独立命令 `ext`、最
 - 仅依赖本仓库，使用 `GOWORK=off CGO_ENABLED=0` 构建和运行。
 - `ext` 默认监听 `127.0.0.1:5001`，提供插件管理页。
 - 标准 ZIP 的 `pack`、`validate`、`run`；目录和 ZIP 都可运行。
-- Web、Lua，以及支持 Linux amd64/arm64 的原生可执行插件。原生插件可经本地 Host API 调用其他原生插件和已授权的 systemd 服务。
+- Web、Lua，以及支持 Linux amd64/arm64 的原生可执行插件。原生插件可经本地 Host API 调用其他原生插件和 systemd 服务接口。
 - 原生 HTTP 调用 Lua、原生 WebSocket 事件流、插件业务 SQLite。
 - 安装、启用、启动、停止、禁用、卸载、重启恢复，以及保留/清除业务数据。
 - 配置持久化；标记为 `secret` 的值不出现在管理响应和宿主日志中。
-- 无效包、缺失入口、不兼容 Host API、未获授权的 Host 调用返回明确错误。
-- `host.services` 通过共享的 `hostsys/services` 后端提供 `list`、`get`、`restart`，按部署者的 `--service-grants` 配置逐插件授权。
+- 无效包、缺失入口、不兼容 Host API 和失败的服务调用返回明确错误。
+- `host.services` 通过共享的 `hostsys/services` 后端提供 `list`、`get`、`start`、`stop`、`restart`、`logs`。操作受宿主账号的系统权限约束。
 - 插件可通过 `host.schedule` 按 cron 表达式或 `@every` 注册定时任务，回调在插件实例的 Lua goroutine 上串行执行。
-- `host.http`、`host.ws` 尚未实现，始终返回明确的“未授权”错误。
+- `host.http`、`host.ws` 尚未实现，调用会返回“尚未实现”错误。
 
 ## 构建
 
@@ -74,7 +74,7 @@ cd my-plugin
 ext dev
 ```
 
-`init` 提供「网页 + Lua」「只有网页」「只有 Lua」三种模板。填写插件名称和标识后，工具会在当前目录下创建以插件名称命名的文件夹。生成的 `README.md` 说明各文件的用途和验证方法。项目使用原生网页和 Lua，安装命令后可以直接开始。
+`init` 提供「网页 + Lua」「只有网页」「只有 Lua」「网页 + 原生后端」「只有原生后端」五种模板。原生模板附带 Go 后端源码、`go.mod` 和 `Makefile`，先运行 `make build`（或 `make dev`）生成 `native/plugin`，再运行 `ext dev` 或 `ext pkg`。`backend/`、`go.mod` 和 `Makefile` 不会进入 ZIP。填写插件名称和标识后，工具会在当前目录下创建以插件名称命名的文件夹。生成的 `README.md` 说明各文件的用途和验证方法。
 
 打开 `dev` 输出的地址，插件会自动安装并启用。访问 `/` 时，有网页就打开插件，否则打开 `/host/`。保存网页资源后浏览器自动刷新。Lua、`native/` 下的运行产物或 `manifest.json` 变动后，宿主检查文件并重启插件。更新失败会在终端显示原因，之前能运行的版本会继续提供服务或被重新启动。修改插件标识后重新运行 `dev`。
 
@@ -92,13 +92,13 @@ ZIP 位于 `dist/<插件标识>-<版本>.zip`，内容来自项目根目录的 `
 
 | 命令 | 行为 |
 | --- | --- |
-| `ext` / `ext serve` | 启动宿主和管理页。参数：`--listen`、`--data-dir`、`--service-grants`。 |
+| `ext` / `ext serve` | 启动宿主和管理页。参数：`--listen`、`--data-dir`。 |
 | `ext run <dir\|zip>` | 安装、启用并运行一个插件，然后启动宿主。参数同上。 |
 | `ext version` | 查看 Extension Host 版本。 |
 | `ext validate <dir\|zip>` | 校验 Manifest、入口、Host API 兼容性和包路径。 |
 | `ext pack <dir> [-o file]` | 校验后打包。默认输出 `dist/<id>-<version>.zip`。 |
 | `ext init` | 选择模板，并在当前目录下创建以插件名称命名的项目文件夹。 |
-| `ext dev` | 自动安装并启用当前目录的插件，保存文件后更新。支持 `--listen`、`--service-grants`。 |
+| `ext dev` | 自动安装并启用当前目录的插件，保存文件后更新。支持 `--listen`。 |
 | `ext pkg` | 校验当前项目并把运行文件打包到 `dist/<id>-<version>.zip`。 |
 
 参数可以放在位置参数前后。`serve` 和 `run` 默认使用 `./ext-data`，`dev` 使用项目的 `.ext/`。
@@ -126,8 +126,7 @@ lua/proxies.lua
   "config": {
     "controller": { "type": "string", "required": true },
     "secret": { "type": "string", "secret": true }
-  },
-  "capabilities": ["http", "websocket", "storage", "services"]
+  }
 }
 ```
 
@@ -143,7 +142,8 @@ lua/proxies.lua
 | `native` | 原生插件的目标平台、公开方法和网页 API 声明。 |
 | `minHostVersion` | 最低 Extension Host 版本，原生插件必填。 |
 | `config` | 可选。配置字段类型为 `string`、`number`、`boolean`；`secret` 只用于字符串。 |
-| `capabilities` | 可选。插件声明的能力需求；实际授权由部署配置决定。 |
+
+数字配置可声明 `min`、`max` 和 `format: "integer"`。非密钥字符串可声明 `format: "writable-directory"`，填写时须为宿主机绝对路径。保存配置时，宿主会创建缺失的目录并创建、试写和移除临时文件。校验通过后才保存配置。
 
 包内路径必须留在包根目录内。ZIP 中的绝对路径、`..`、反斜杠、符号链接和重复路径都会被拒绝。当前限制为单文件 64 MiB、总计 256 MiB、最多 4096 个文件。
 
@@ -229,6 +229,8 @@ host.schedule.unregister("nightly-backup")  -- 已移除时为 true，否则为 
 - 同一任务上一次调用仍在排队或运行时，新的触发会被跳过并写入警告日志。
 - 回调出错时写入错误日志，不重试。
 - `unregister(name)` 移除任务，存在并移除时返回 `true`，否则返回 `false`。
+- `validate(expression)` 检查表达式，返回 `true` 或 `nil, error`。
+- `next(name)` 返回任务下次触发的 UTC RFC 3339 时间。没有下次触发时间时返回 `nil`。
 - 注册只在插件实例运行期间有效。宿主重启后 Lua 状态会重建，插件需要在启动钩子中按自己持久化的设置重新注册；宿主停止期间错过的执行不会补跑。
 
 ### `host.storage`
@@ -265,9 +267,9 @@ local text = host.json.encode(payload)
 | --- | --- |
 | `host.dataDir` | 当前插件的数据目录，用于放置自有文件。 |
 | `host.apiVersion` | 当前宿主 API 版本，值为 `1`。 |
-| `host.http.request` | 尚未实现，调用返回 `host.http.request is not authorized`。 |
-| `host.ws.subscribe` | 尚未实现，调用返回 `host.ws.subscribe is not authorized`。 |
-| `host.services.list/get/restart` | 按部署授权访问 systemd 服务；未授权时返回明确错误。详见下一节。 |
+| `host.http.request` | 尚未实现，调用返回 `host.http.request is not implemented`。 |
+| `host.ws.subscribe` | 尚未实现，调用返回 `host.ws.subscribe is not implemented`。 |
+| `host.services.list/get/start/stop/restart/logs` | 访问 systemd 服务。详见 [systemd 服务](#systemd-服务)。 |
 | `host.schedule.register/unregister` | 注册和移除实例内的定时任务；详见上文 `host.schedule` 一节。 |
 
 ### 标准库和 `require`
@@ -283,55 +285,24 @@ local text = host.json.encode(payload)
 
 模块名形如 `a.b` 时解析为 `a/b.lua` 或 `a/b/init.lua`。加载结果缓存，循环依赖会报错。
 
-## 服务授权与 `host.services`
+## systemd 服务
 
-插件使用服务能力必须同时满足两个条件：
-
-1. Manifest 的 `capabilities` 声明 `"services"`。
-2. 宿主启动时通过 `--service-grants <file>` 为该插件 ID 配置授权。
-
-授权文件是 JSON 对象，键为插件 ID：
-
-```json
-{
-  "com.godesk.services": {
-    "units": ["ssh.service", "cron.service"],
-    "actions": ["list", "get", "restart"],
-    "elevate": ["restart"]
-  }
-}
-```
-
-| 字段 | 说明 |
-| --- | --- |
-| `units` | 可访问的 systemd 单元名；每个名字都必须是合法的 `.service` 单元名。 |
-| `actions` | 允许的操作子集：`list`、`get`、`restart`。 |
-| `elevate` | 需要通过非交互式 `sudo -n` 以 root 运行的操作子集；当前只有 `restart` 会使用该标记。 |
-
-`elevate` 中的每一项必须同时出现在 `actions` 中。授权在 `host.Open` 时校验，插件 ID 为空、单元名非法、操作未知或越权提权都会返回描述性错误。未出现在授权文件中的插件、未声明 `services` 能力的插件、未列出的单元和未授予的操作都会被拒绝。
-
-```sh
-./bin/ext run ./examples/services --service-grants ./service-grants.json --data-dir ./ext-data
-```
-
-### 插件侧接口
+已启用的插件可以通过 `host.services` 管理 systemd 服务。查询与日志读取以宿主运行账号执行。启停和重启默认也使用该账号，传入 `{ sudo = true }` 时，非 root 宿主直接通过非交互 sudo 执行，由系统的 sudoers 授权决定能否执行。
 
 ```lua
 local items = host.services.list()
-local detail = host.services.get("ssh.service")
-host.services.restart("ssh.service")
+local detail = host.services.get("caddy.service")
+host.services.start("caddy.service", { sudo = true })
+local logs = host.services.logs("caddy.service", 50)
 ```
 
-- `list()` 返回服务数组，每项包含 `name`、`description`、`state`、`stateDetail`、`bootState`、`actions`，并且只包含拥有 `list` 权限的单元。没有任何单元拥有 `list` 权限时抛出 `host.services.list is not authorized: no service grant is configured`。
-- `get(unit)` 返回单元详情，字段为 `name`、`state`、`stateDetail`、`bootState`、`mainPid`、`memoryBytes`、`cpuUsageNs`、`activeEnterTimestamp`、`fragmentPath`；需要该单元精确的 `get` 权限。
-- `restart(unit)` 重启单元并返回 `true`；需要该单元精确的 `restart` 权限。配置在 `elevate` 中的 `restart` 会通过非交互式 sudo 执行。
-- 单元名不合法时抛出包含 `invalid unit` 的错误。
-- 未获授权的单元或操作抛出 `host.services.<fn> is not authorized for unit <name>`。
-- 后端错误保留机器可读错误码，例如 `host.services.get: not_found: 服务不存在`、`host.services.restart: permission: ...`、`host.services.list: operation_failed: ...`。
-- 未检测到可用的服务后端（例如 systemd 不可用）时，三个函数都返回 `host.services.<fn>: operation_failed: 没有可用的服务后端`。
-- 插件没有 `services` 能力或没有任何授权时，三个函数都返回 `host.services.<fn> is not authorized: no capability grant is configured`。
+- `list()` 返回服务数组，包含名称、说明、状态和可用动作。
+- `get(unit)` 返回单元详情，包括进程 ID、内存和 CPU 用量、启动时间及 unit 文件路径。
+- `start(unit[, options])`、`stop(unit[, options])` 和 `restart(unit[, options])` 成功时返回 `true`。
+- `logs(unit[, lines])` 返回最近的 journal 日志行。默认 200 行，接受 1 到 2000 之间的整数。
+- 单元名必须是合法的 `.service` 名称。调用错误保留机器可读错误码，例如 `invalid_unit`、`not_found`、`permission` 和 `logs_unavailable`。
 
-`host.services` 只暴露插件所需的最小服务面；启动、停止、启用、禁用和日志仍保留给宿主原生服务管理。重启默认以宿主运行账号执行，只有显式配置 `elevate` 才使用 sudo。
+试用服务示例时，运行 `./bin/ext run ./examples/services --data-dir ./ext-data`。
 
 ## HTTP 路由
 
@@ -361,7 +332,7 @@ host.services.restart("ssh.service")
 | 启动 | 为已启用插件创建当前进程实例；重复启动收敛为同一实例。 |
 | 停止 | 停止后端，释放订阅和数据库连接，保留启用意图。 |
 | 禁用 | 清除启用意图并停止，宿主重启后不会自动恢复。 |
-| 卸载 | 先停止并释放资源，再删除包、配置和授权；默认保留业务数据。 |
+| 卸载 | 先停止并释放资源，再删除包和配置；默认保留业务数据。 |
 | 关闭页面 | 只释放该 WebSocket 订阅，插件实例继续运行。 |
 | 关闭宿主 | 停止全部实例，释放数据库、订阅和 HTTP 连接。 |
 
@@ -376,7 +347,7 @@ host.services.restart("ssh.service")
   logs/<id>-<version>.log    插件日志
 ```
 
-卸载默认只删除 `packages/<id>`、安装记录、配置和授权，保留 `plugins/<id>`。`purge=true` 会同时删除该目录。重新安装后继续使用原有业务库。
+卸载默认只删除 `packages/<id>`、安装记录及配置，保留 `plugins/<id>`。`purge=true` 会同时删除该目录。重新安装后继续使用原有业务库。
 
 ## 嵌入 GoDesk
 
@@ -404,11 +375,11 @@ GOWORK=off CGO_ENABLED=0 go test ./...
 make check
 ```
 
-集成测试覆盖安装、启用、HTTP、WebSocket、SQLite 持久化、宿主重启恢复、停止/禁用意图、启动失败重试、配置脱敏、Web-only/Lua-only、非法包错误，服务授权的列表过滤、单元级拒绝、能力校验和后端错误传播，以及原生进程的就绪、插件互调、超时、停机与恢复。
+集成测试覆盖安装、启用、HTTP、WebSocket、SQLite 持久化、宿主重启恢复、停止/禁用意图、启动失败重试、配置脱敏、Web-only/Lua-only、非法包错误，服务接口的单元校验、sudo 选项和后端错误传播，以及原生进程的就绪、插件互调、超时、停机与恢复。
 
 ## 安全模型
 
-首版面向部署者主动信任并安装的插件。插件 Web 页面与宿主同源；Lua 与宿主同进程，原生插件以同一宿主账号作为子进程运行。能力授权约束通过 Host API 发起的操作，不限制插件直接使用的文件权限。
+插件 Web 页面与宿主同源；Lua 与宿主同进程，原生插件以同一宿主账号作为子进程运行。部署者启用自己信任的插件。宿主账号的系统权限决定插件能执行的操作。
 
 `ext` 默认只监听回环地址且没有登录。不要在没有额外访问控制的情况下把它绑定到公网接口。
 

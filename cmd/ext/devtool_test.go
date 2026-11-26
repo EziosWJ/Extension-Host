@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -32,21 +33,40 @@ func TestProjectTemplatesAndPackage(t *testing.T) {
 			}
 			t.Chdir(name)
 			writeDevTestFile(t, ".env", "local-only")
+			if kind.native {
+				buildNativeBackend(t)
+			}
 			// Repeat packaging to cover a pre-existing dist.
 			for range 2 {
 				if err := packageProject(nil); err != nil {
 					t.Fatal(err)
 				}
 			}
-			pkg, err := loadBundle(filepath.Join("dist", id+"-0.1.0.zip"))
+			archiveName := id + "-0.1.0.zip"
+			if kind.native {
+				platform, err := nativePlatform()
+				if err != nil {
+					t.Fatal(err)
+				}
+				archiveName = id + "-0.1.0-" + platform + ".zip"
+			}
+			pkg, err := loadBundle(filepath.Join("dist", archiveName))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if pkg.Manifest.Name != name || (pkg.Manifest.Entry.Web != "") != kind.web || (pkg.Manifest.Entry.Lua != "") != kind.lua {
+			if pkg.Manifest.Name != name || (pkg.Manifest.Entry.Web != "") != kind.web ||
+				(pkg.Manifest.Entry.Lua != "") != kind.lua || (pkg.Manifest.Native != nil) != kind.native {
 				t.Fatalf("unexpected manifest: %#v", pkg.Manifest)
 			}
+			if kind.native {
+				if pkg.Manifest.Entry.Native != "native/plugin" || pkg.Manifest.MinHostVersion == "" ||
+					pkg.Manifest.Native == nil || pkg.Manifest.Native.WebAPI != kind.web {
+					t.Fatalf("unexpected native manifest: %#v", pkg.Manifest)
+				}
+			}
 			for file := range pkg.Files {
-				if file != "manifest.json" && !strings.HasPrefix(file, "web/") && !strings.HasPrefix(file, "lua/") {
+				if file != "manifest.json" && !strings.HasPrefix(file, "web/") &&
+					!strings.HasPrefix(file, "lua/") && !strings.HasPrefix(file, "native/") {
 					t.Errorf("unexpected file in ZIP: %s", file)
 				}
 			}
@@ -216,5 +236,18 @@ func writeDevTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func buildNativeBackend(t *testing.T) {
+	t.Helper()
+	t.Setenv("CGO_ENABLED", "0")
+	t.Setenv("GOWORK", "off")
+	if err := os.MkdirAll("native", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "build", "-trimpath", "-o", "native/plugin", "./backend")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build native backend: %v\n%s", err, output)
 	}
 }

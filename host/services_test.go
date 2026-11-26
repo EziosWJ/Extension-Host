@@ -7,8 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
-	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -18,11 +17,11 @@ import (
 	"github.com/EziosWJ/Extension-Host/hostsys/services"
 )
 
-const servicesPluginID = "com.godesk.services.granted"
+const servicesPluginID = "com.godesk.services.test"
 
 var servicesAPIPath = "/extensions/" + servicesPluginID + "/api"
 
-func TestServicesGrantFiltersListAndReturnsDetail(t *testing.T) {
+func TestServicesListAndDetail(t *testing.T) {
 	ctx := testContext(t)
 	mainPID := 4242
 	memoryBytes := int64(8 * 1024 * 1024)
@@ -73,14 +72,8 @@ func TestServicesGrantFiltersListAndReturnsDetail(t *testing.T) {
 			FragmentPath:         "/etc/systemd/system/alpha.service",
 		},
 	}
-	extensionHost := openHostWithServices(t, ctx, backend, map[string]host.ServiceGrant{
-		servicesPluginID: {
-			Units:   []string{"alpha.service", "beta.service", "delta.service"},
-			Actions: []string{"list", "get", "restart"},
-			Elevate: []string{"restart"},
-		},
-	})
-	installServicesPlugin(t, ctx, extensionHost, servicesPluginID, []string{"services"})
+	extensionHost := openHostWithServices(t, ctx, backend)
+	installServicesPlugin(t, ctx, extensionHost)
 	server := startServer(t, extensionHost)
 
 	status, body := httpGet(t, server.URL+servicesAPIPath+"/list")
@@ -98,10 +91,10 @@ func TestServicesGrantFiltersListAndReturnsDetail(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &listed); err != nil {
 		t.Fatalf("decode list %q: %v", body, err)
 	}
-	if len(listed) != 3 {
+	if len(listed) != 4 {
 		t.Fatalf("listed = %d, %q", len(listed), body)
 	}
-	if listed[0].Name != "alpha.service" || listed[1].Name != "beta.service" || listed[2].Name != "delta.service" {
+	if listed[0].Name != "alpha.service" || listed[1].Name != "beta.service" || listed[2].Name != "gamma.service" || listed[3].Name != "delta.service" {
 		t.Fatalf("listed names = %#v", listed)
 	}
 	if listed[0].Description != "Alpha" || listed[0].State != "running" || listed[0].BootState != "enabled" {
@@ -110,8 +103,8 @@ func TestServicesGrantFiltersListAndReturnsDetail(t *testing.T) {
 	if len(listed[0].Actions) != 1 || listed[0].Actions[0] != "restart" {
 		t.Fatalf("alpha actions = %#v", listed[0].Actions)
 	}
-	if listed[2].Actions == nil || len(listed[2].Actions) != 0 {
-		t.Fatalf("delta actions = %#v, want an empty array", listed[2].Actions)
+	if listed[3].Actions == nil || len(listed[3].Actions) != 0 {
+		t.Fatalf("delta actions = %#v, want an empty array", listed[3].Actions)
 	}
 
 	status, body = httpGet(t, server.URL+servicesAPIPath+"/get?unit=alpha.service")
@@ -152,13 +145,8 @@ func TestServicesGrantFiltersListAndReturnsDetail(t *testing.T) {
 func TestServicesListEmptyEncodesAsArray(t *testing.T) {
 	ctx := testContext(t)
 	backend := &fakeServiceBackend{}
-	extensionHost := openHostWithServices(t, ctx, backend, map[string]host.ServiceGrant{
-		servicesPluginID: {
-			Units:   []string{"alpha.service"},
-			Actions: []string{"list"},
-		},
-	})
-	installServicesPlugin(t, ctx, extensionHost, servicesPluginID, []string{"services"})
+	extensionHost := openHostWithServices(t, ctx, backend)
+	installServicesPlugin(t, ctx, extensionHost)
 	server := startServer(t, extensionHost)
 
 	status, body := httpGet(t, server.URL+servicesAPIPath+"/list")
@@ -172,27 +160,22 @@ func TestServicesListEmptyEncodesAsArray(t *testing.T) {
 
 func TestServicesRestartElevation(t *testing.T) {
 	for _, testCase := range []struct {
-		name    string
-		elevate []string
-		want    bool
+		name  string
+		query string
+		want  bool
 	}{
-		{name: "elevated", elevate: []string{"restart"}, want: true},
+		{name: "elevated", query: "&sudo=true", want: true},
 		{name: "host account", want: false},
+		{name: "sudo false", query: "&sudo=false", want: false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			ctx := testContext(t)
 			backend := &fakeServiceBackend{}
-			extensionHost := openHostWithServices(t, ctx, backend, map[string]host.ServiceGrant{
-				servicesPluginID: {
-					Units:   []string{"alpha.service"},
-					Actions: []string{"restart"},
-					Elevate: testCase.elevate,
-				},
-			})
-			installServicesPlugin(t, ctx, extensionHost, servicesPluginID, []string{"services"})
+			extensionHost := openHostWithServices(t, ctx, backend)
+			installServicesPlugin(t, ctx, extensionHost)
 			server := startServer(t, extensionHost)
 
-			status, body := httpJSONStatus(t, http.MethodPost, server.URL+servicesAPIPath+"/restart?unit=alpha.service")
+			status, body := httpJSONStatus(t, http.MethodPost, server.URL+servicesAPIPath+"/restart?unit=alpha.service"+testCase.query)
 			if status != http.StatusOK || !strings.Contains(body, `"ok":true`) {
 				t.Fatalf("restart = %d, %q", status, body)
 			}
@@ -207,109 +190,6 @@ func TestServicesRestartElevation(t *testing.T) {
 	}
 }
 
-func TestServicesDeniesUngrantedAndInvalidUnits(t *testing.T) {
-	ctx := testContext(t)
-	backend := &fakeServiceBackend{
-		services: []services.Service{{Name: "alpha.service", State: services.StateRunning}},
-	}
-	extensionHost := openHostWithServices(t, ctx, backend, map[string]host.ServiceGrant{
-		servicesPluginID: {
-			Units:   []string{"alpha.service"},
-			Actions: []string{"list", "get", "restart"},
-		},
-	})
-	installServicesPlugin(t, ctx, extensionHost, servicesPluginID, []string{"services"})
-	server := startServer(t, extensionHost)
-
-	status, body := httpGet(t, server.URL+servicesAPIPath+"/get?unit=beta.service")
-	if status != http.StatusInternalServerError || !strings.Contains(body, "host.services.get is not authorized for unit beta.service") {
-		t.Fatalf("ungranted get = %d, %q", status, body)
-	}
-	status, body = httpJSONStatus(t, http.MethodPost, server.URL+servicesAPIPath+"/restart?unit=beta.service")
-	if status != http.StatusInternalServerError || !strings.Contains(body, "host.services.restart is not authorized for unit beta.service") {
-		t.Fatalf("ungranted restart = %d, %q", status, body)
-	}
-	status, body = httpGet(t, server.URL+servicesAPIPath+"/get?unit=not-a-unit")
-	if status != http.StatusInternalServerError || !strings.Contains(body, "invalid unit") {
-		t.Fatalf("invalid unit = %d, %q", status, body)
-	}
-	if calls := backend.restartCalls(); len(calls) != 0 {
-		t.Fatalf("restart calls = %#v", calls)
-	}
-}
-
-func TestServicesMissingGrantIsDenied(t *testing.T) {
-	ctx := testContext(t)
-	backend := &fakeServiceBackend{
-		services: []services.Service{{Name: "alpha.service"}},
-	}
-	extensionHost := openHostWithServices(t, ctx, backend, nil)
-	installServicesPlugin(t, ctx, extensionHost, servicesPluginID, []string{"services"})
-	server := startServer(t, extensionHost)
-
-	status, body := httpGet(t, server.URL+servicesAPIPath+"/list")
-	if status != http.StatusInternalServerError || !strings.Contains(body, "host.services.list is not authorized: no capability grant is configured") {
-		t.Fatalf("list = %d, %q", status, body)
-	}
-	status, body = httpGet(t, server.URL+servicesAPIPath+"/get?unit=alpha.service")
-	if status != http.StatusInternalServerError || !strings.Contains(body, "host.services.get is not authorized: no capability grant is configured") {
-		t.Fatalf("get = %d, %q", status, body)
-	}
-}
-
-func TestServicesListRequiresListPermission(t *testing.T) {
-	ctx := testContext(t)
-	backend := &fakeServiceBackend{
-		services: []services.Service{{Name: "alpha.service", State: services.StateRunning}},
-		detail:   services.ServiceDetail{Name: "alpha.service", State: services.StateRunning},
-	}
-	extensionHost := openHostWithServices(t, ctx, backend, map[string]host.ServiceGrant{
-		servicesPluginID: {
-			Units:   []string{"alpha.service"},
-			Actions: []string{"get"},
-		},
-	})
-	installServicesPlugin(t, ctx, extensionHost, servicesPluginID, []string{"services"})
-	server := startServer(t, extensionHost)
-
-	status, body := httpGet(t, server.URL+servicesAPIPath+"/list")
-	if status != http.StatusInternalServerError || !strings.Contains(body, "host.services.list is not authorized: no service grant is configured") {
-		t.Fatalf("list = %d, %q", status, body)
-	}
-	status, body = httpGet(t, server.URL+servicesAPIPath+"/get?unit=alpha.service")
-	if status != http.StatusOK || !strings.Contains(body, `"name":"alpha.service"`) {
-		t.Fatalf("get = %d, %q", status, body)
-	}
-}
-
-func TestServicesRequiresManifestCapability(t *testing.T) {
-	ctx := testContext(t)
-	backend := &fakeServiceBackend{
-		services: []services.Service{{Name: "alpha.service"}},
-		detail:   services.ServiceDetail{Name: "alpha.service"},
-	}
-	extensionHost := openHostWithServices(t, ctx, backend, map[string]host.ServiceGrant{
-		servicesPluginID: {
-			Units:   []string{"alpha.service"},
-			Actions: []string{"list", "get", "restart"},
-		},
-	})
-	installServicesPlugin(t, ctx, extensionHost, servicesPluginID, nil)
-	server := startServer(t, extensionHost)
-
-	status, body := httpGet(t, server.URL+servicesAPIPath+"/list")
-	if status != http.StatusInternalServerError || !strings.Contains(body, "host.services.list is not authorized: no capability grant is configured") {
-		t.Fatalf("list = %d, %q", status, body)
-	}
-	status, body = httpJSONStatus(t, http.MethodPost, server.URL+servicesAPIPath+"/restart?unit=alpha.service")
-	if status != http.StatusInternalServerError || !strings.Contains(body, "host.services.restart is not authorized: no capability grant is configured") {
-		t.Fatalf("restart = %d, %q", status, body)
-	}
-	if calls := backend.restartCalls(); len(calls) != 0 {
-		t.Fatalf("restart calls = %#v", calls)
-	}
-}
-
 func TestServicesBackendErrorsSurfaceWithCode(t *testing.T) {
 	ctx := testContext(t)
 	backend := &fakeServiceBackend{
@@ -317,13 +197,8 @@ func TestServicesBackendErrorsSurfaceWithCode(t *testing.T) {
 		detailErr:  &services.Error{Code: "not_found", Message: "服务不存在"},
 		restartErr: &services.Error{Code: "permission", Message: "需要权限"},
 	}
-	extensionHost := openHostWithServices(t, ctx, backend, map[string]host.ServiceGrant{
-		servicesPluginID: {
-			Units:   []string{"alpha.service"},
-			Actions: []string{"list", "get", "restart"},
-		},
-	})
-	installServicesPlugin(t, ctx, extensionHost, servicesPluginID, []string{"services"})
+	extensionHost := openHostWithServices(t, ctx, backend)
+	installServicesPlugin(t, ctx, extensionHost)
 	server := startServer(t, extensionHost)
 
 	status, body := httpGet(t, server.URL+servicesAPIPath+"/list")
@@ -340,112 +215,62 @@ func TestServicesBackendErrorsSurfaceWithCode(t *testing.T) {
 	}
 }
 
-func TestServiceGrantValidation(t *testing.T) {
+func TestLuaServicesStartStopAndLogs(t *testing.T) {
 	ctx := testContext(t)
-	testCases := []struct {
-		name   string
-		grants map[string]host.ServiceGrant
-		want   string
+	backend := &fakeServiceBackend{logs: []string{"first", "second"}}
+	extensionHost := openHostWithServices(t, ctx, backend)
+	installServicesPlugin(t, ctx, extensionHost)
+	server := startServer(t, extensionHost)
+	for _, tc := range []struct {
+		method, path, want string
+		status             int
 	}{
-		{
-			name:   "empty plugin id",
-			grants: map[string]host.ServiceGrant{"": {Units: []string{"alpha.service"}, Actions: []string{"list"}}},
-			want:   "empty plugin id",
-		},
-		{
-			name:   "invalid unit",
-			grants: map[string]host.ServiceGrant{"com.godesk.bad": {Units: []string{"alpha"}, Actions: []string{"list"}}},
-			want:   `invalid unit "alpha"`,
-		},
-		{
-			name:   "option-like unit",
-			grants: map[string]host.ServiceGrant{"com.godesk.bad": {Units: []string{"-alpha.service"}, Actions: []string{"list"}}},
-			want:   `invalid unit "-alpha.service"`,
-		},
-		{
-			name:   "invalid action",
-			grants: map[string]host.ServiceGrant{"com.godesk.bad": {Units: []string{"alpha.service"}, Actions: []string{"stop"}}},
-			want:   `invalid action "stop"`,
-		},
-		{
-			name: "elevate action not granted",
-			grants: map[string]host.ServiceGrant{
-				"com.godesk.bad": {Units: []string{"alpha.service"}, Actions: []string{"list"}, Elevate: []string{"restart"}},
-			},
-			want: `elevate action "restart" is not granted`,
-		},
-	}
-	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			extensionHost, err := host.Open(ctx, host.Options{
-				DataDir:       t.TempDir(),
-				ServiceGrants: testCase.grants,
-			})
-			if err == nil {
-				_ = extensionHost.Close(ctx)
-				t.Fatal("Open accepted an invalid service grant")
-			}
-			if !strings.Contains(err.Error(), testCase.want) {
-				t.Fatalf("error = %q, want substring %q", err, testCase.want)
+		{"POST", "start?unit=alpha.service&sudo=true", "true", 200},
+		{"POST", "stop?unit=alpha.service", "true", 200},
+		{"POST", "stop?unit=alpha.service&sudo=invalid", "sudo 必须是布尔值", 500},
+		{"GET", "get?unit=invalid", "invalid unit", 500},
+		{"GET", "logs?unit=alpha.service", `["first","second"]`, 200},
+		{"GET", "logs?unit=alpha.service&lines=1", `["first","second"]`, 200},
+		{"GET", "logs?unit=alpha.service&lines=2000", `["first","second"]`, 200},
+		{"GET", "logs?unit=alpha.service&lines=0", "lines 必须是", 500},
+		{"GET", "logs?unit=alpha.service&lines=2001", "lines 必须是", 500},
+		{"GET", "logs?unit=alpha.service&lines=1.5", "lines 必须是", 500},
+		{"GET", "logs?unit=alpha.service&lines=text", "lines 必须是", 500},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			status, body := httpJSONStatus(t, tc.method, server.URL+servicesAPIPath+"/"+tc.path)
+			if status != tc.status || (tc.status == 200 && strings.TrimSpace(body) != tc.want) ||
+				(tc.status != 200 && !strings.Contains(body, tc.want)) {
+				t.Fatalf("response = %d, %q, want %d, %q", status, body, tc.status, tc.want)
 			}
 		})
 	}
 
-	valid := openHostWithServices(t, ctx, &fakeServiceBackend{}, map[string]host.ServiceGrant{
-		"com.godesk.valid": {
-			Units:   []string{"alpha.service", "beta@instance.service"},
-			Actions: []string{"list", "get", "restart"},
-			Elevate: []string{"restart"},
-		},
-	})
-	if valid == nil {
-		t.Fatal("Open rejected a valid service grant")
-	}
-}
-
-func TestLoadServiceGrantsFile(t *testing.T) {
-	if grants, err := host.LoadServiceGrantsFile(""); err != nil || grants != nil {
-		t.Fatalf("empty path = %#v, %v", grants, err)
-	}
-
-	path := filepath.Join(t.TempDir(), "grants.json")
-	content := `{
-		"com.godesk.hello": {
-			"units": ["ssh.service", "cron.service"],
-			"actions": ["list", "get"],
-			"elevate": ["get"]
+	for _, action := range []struct{ name, method string }{
+		{"start", http.MethodPost}, {"stop", http.MethodPost}, {"logs", http.MethodGet},
+	} {
+		for _, tc := range []struct{ query, want string }{
+			{"unit=invalid", "invalid unit"},
+			{"unit=1&numericUnit=1", "string expected"},
+		} {
+			t.Run(action.name+"/"+tc.query, func(t *testing.T) {
+				path := servicesAPIPath + "/" + action.name + "?" + tc.query
+				status, body := httpJSONStatus(t, action.method, server.URL+path)
+				if status != http.StatusInternalServerError || !strings.Contains(body, tc.want) {
+					t.Fatalf("response = %d, %q, want 500, %q", status, body, tc.want)
+				}
+			})
 		}
-	}`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write grants: %v", err)
 	}
-	grants, err := host.LoadServiceGrantsFile(path)
-	if err != nil {
-		t.Fatalf("LoadServiceGrantsFile: %v", err)
+	wantCalls := []fakeServiceCall{
+		{action: "start", unit: "alpha.service", elevated: true},
+		{action: "stop", unit: "alpha.service"},
+		{action: "logs", unit: "alpha.service", lines: 200},
+		{action: "logs", unit: "alpha.service", lines: 1},
+		{action: "logs", unit: "alpha.service", lines: 2000},
 	}
-	grant, ok := grants["com.godesk.hello"]
-	if !ok {
-		t.Fatalf("grants = %#v", grants)
-	}
-	if len(grant.Units) != 2 || grant.Units[0] != "ssh.service" || grant.Units[1] != "cron.service" {
-		t.Fatalf("units = %#v", grant.Units)
-	}
-	if len(grant.Actions) != 2 || grant.Actions[0] != "list" || grant.Actions[1] != "get" {
-		t.Fatalf("actions = %#v", grant.Actions)
-	}
-	if len(grant.Elevate) != 1 || grant.Elevate[0] != "get" {
-		t.Fatalf("elevate = %#v", grant.Elevate)
-	}
-
-	if _, err := host.LoadServiceGrantsFile(filepath.Join(t.TempDir(), "missing.json")); err == nil {
-		t.Fatal("missing grants file was accepted")
-	}
-	broken := filepath.Join(t.TempDir(), "broken.json")
-	if err := os.WriteFile(broken, []byte("{"), 0o600); err != nil {
-		t.Fatalf("write broken grants: %v", err)
-	}
-	if _, err := host.LoadServiceGrantsFile(broken); err == nil {
-		t.Fatal("malformed grants file was accepted")
+	if calls := backend.serviceCalls(); !slices.Equal(calls, wantCalls) {
+		t.Fatalf("service calls = %+v, want %+v", calls, wantCalls)
 	}
 }
 
@@ -454,15 +279,24 @@ type fakeRestartCall struct {
 	elevated bool
 }
 
+type fakeServiceCall struct {
+	action   string
+	unit     string
+	elevated bool
+	lines    int
+}
+
 type fakeServiceBackend struct {
 	services   []services.Service
 	detail     services.ServiceDetail
 	listErr    error
 	detailErr  error
 	restartErr error
+	logs       []string
 
 	mu       sync.Mutex
 	restarts []fakeRestartCall
+	calls    []fakeServiceCall
 }
 
 func (f *fakeServiceBackend) List(context.Context) ([]services.Service, error) {
@@ -486,18 +320,44 @@ func (f *fakeServiceBackend) Restart(_ context.Context, unit string, elevated bo
 	return f.restartErr
 }
 
+func (f *fakeServiceBackend) Start(_ context.Context, unit string, elevated bool) error {
+	f.recordCall(fakeServiceCall{action: "start", unit: unit, elevated: elevated})
+	return nil
+}
+
+func (f *fakeServiceBackend) Stop(_ context.Context, unit string, elevated bool) error {
+	f.recordCall(fakeServiceCall{action: "stop", unit: unit, elevated: elevated})
+	return nil
+}
+
+func (f *fakeServiceBackend) Logs(_ context.Context, unit string, lines int) ([]string, error) {
+	f.recordCall(fakeServiceCall{action: "logs", unit: unit, lines: lines})
+	return f.logs, nil
+}
+
+func (f *fakeServiceBackend) recordCall(call fakeServiceCall) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, call)
+}
+
+func (f *fakeServiceBackend) serviceCalls() []fakeServiceCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.calls)
+}
+
 func (f *fakeServiceBackend) restartCalls() []fakeRestartCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]fakeRestartCall(nil), f.restarts...)
 }
 
-func openHostWithServices(t *testing.T, ctx context.Context, backend services.PluginBackend, grants map[string]host.ServiceGrant) *host.Host {
+func openHostWithServices(t *testing.T, ctx context.Context, backend services.PluginBackend) *host.Host {
 	t.Helper()
 	extensionHost, err := host.Open(ctx, host.Options{
 		DataDir:        t.TempDir(),
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
-		ServiceGrants:  grants,
 		ServiceBackend: backend,
 	})
 	if err != nil {
@@ -528,30 +388,52 @@ host.app.route("GET", "/get", function(request)
   return reply(host.services.get(request.query.unit))
 end)
 
+local function serviceOptions(request)
+  local value = request.query.sudo
+  if value == "true" then return { sudo = true } end
+  if value == "false" then return { sudo = false } end
+  if value then return { sudo = value } end
+end
+
 host.app.route("POST", "/restart", function(request)
-  host.services.restart(request.query.unit)
+  host.services.restart(request.query.unit, serviceOptions(request))
   return reply({ ok = true })
+end)
+
+local function serviceUnit(request)
+  if request.query.numericUnit then
+    return tonumber(request.query.unit)
+  end
+  return request.query.unit
+end
+
+host.app.route("POST", "/start", function(request)
+  return reply(host.services.start(serviceUnit(request), serviceOptions(request)))
+end)
+
+host.app.route("POST", "/stop", function(request)
+  return reply(host.services.stop(serviceUnit(request), serviceOptions(request)))
+end)
+
+host.app.route("GET", "/logs", function(request)
+  local lines = request.query.lines
+  return reply(host.services.logs(serviceUnit(request), tonumber(lines) or lines))
 end)
 `
 
-func installServicesPlugin(t *testing.T, ctx context.Context, extensionHost *host.Host, id string, capabilities []string) {
+func installServicesPlugin(t *testing.T, ctx context.Context, extensionHost *host.Host) {
 	t.Helper()
-	capabilitiesJSON, err := json.Marshal(capabilities)
-	if err != nil {
-		t.Fatalf("encode capabilities: %v", err)
-	}
 	manifest := fmt.Sprintf(`{
 		"schemaVersion": 1,
 		"id": %q,
 		"name": "Services Test",
 		"version": "0.1.0",
 		"hostApi": {"min": 1, "max": 1},
-		"entry": {"lua": "init.lua"},
-		"capabilities": %s
-	}`, id, capabilitiesJSON)
+		"entry": {"lua": "init.lua"}
+	}`, servicesPluginID)
 	installPackage(t, ctx, extensionHost, manifest, map[string]string{"init.lua": servicesTestLua})
-	if err := extensionHost.Enable(ctx, id); err != nil {
-		t.Fatalf("Enable %s: %v", id, err)
+	if err := extensionHost.Enable(ctx, servicesPluginID); err != nil {
+		t.Fatalf("Enable %s: %v", servicesPluginID, err)
 	}
 }
 

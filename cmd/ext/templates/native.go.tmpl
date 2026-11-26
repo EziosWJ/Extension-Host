@@ -1,0 +1,113 @@
+// Command plugin is the native backend for a plugin created by ext init.
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+)
+
+const timeout = 5 * time.Second
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	hostSocket := os.Getenv("GODESK_HOST_SOCKET")
+	instanceToken := os.Getenv("GODESK_HOST_TOKEN")
+	pluginSocket := os.Getenv("GODESK_PLUGIN_SOCKET")
+	if hostSocket == "" || instanceToken == "" {
+		return errors.New("GODESK_HOST_SOCKET and GODESK_HOST_TOKEN are required")
+	}
+
+	server := &http.Server{Handler: routes(instanceToken), ReadHeaderTimeout: timeout}
+	serveErr := make(chan error, 1)
+	if pluginSocket != "" {
+		listener, err := net.Listen("unix", pluginSocket)
+		if err != nil {
+			return fmt.Errorf("listen on plugin socket: %w", err)
+		}
+		go func() {
+			serveErr <- server.Serve(listener)
+		}()
+	}
+
+	if err := reportReady(ctx, hostSocket, instanceToken); err != nil {
+		return err
+	}
+	log.Print("plugin ready")
+
+	select {
+	case <-ctx.Done():
+	case err := <-serveErr:
+		if !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("serve plugin API: %w", err)
+		}
+	}
+	shutdownContext, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return server.Shutdown(shutdownContext)
+}
+
+func routes(token string) http.Handler {
+	mux := http.NewServeMux()
+{{- if .Web }}
+	mux.HandleFunc("GET /api/hello", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"message": "你好，来自原生后端"})
+	})
+{{- end }}
+	mux.HandleFunc("POST /rpc/v1.ping", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"message": "pong"})
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid instance token"})
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+func reportReady(ctx context.Context, socket, token string) error {
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+		},
+	}}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://host/v1/ready", nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("report ready: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("report ready: %s", response.Status)
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}

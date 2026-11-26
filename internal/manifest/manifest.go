@@ -4,6 +4,8 @@ package manifest
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -31,7 +33,6 @@ type Manifest struct {
 	HostAPI        HostAPI                `json:"hostApi"`
 	Entry          Entry                  `json:"entry"`
 	Config         map[string]ConfigField `json:"config,omitempty"`
-	Capabilities   []string               `json:"capabilities,omitempty"`
 	Native         *Native                `json:"native,omitempty"`
 }
 
@@ -55,12 +56,20 @@ type Native struct {
 	WebAPI   bool     `json:"webApi,omitempty"`
 }
 
+const (
+	ConfigFormatInteger           = "integer"
+	ConfigFormatWritableDirectory = "writable-directory"
+)
+
 // ConfigField describes one configuration value.
 type ConfigField struct {
 	Type     string          `json:"type"`
 	Required bool            `json:"required,omitempty"`
 	Secret   bool            `json:"secret,omitempty"`
 	Default  json.RawMessage `json:"default,omitempty"`
+	Format   string          `json:"format,omitempty"`
+	Min      *float64        `json:"min,omitempty"`
+	Max      *float64        `json:"max,omitempty"`
 }
 
 // Parse decodes and validates a manifest.
@@ -120,11 +129,6 @@ func (m *Manifest) Validate() error {
 			return err
 		}
 	}
-	for _, capability := range m.Capabilities {
-		if strings.TrimSpace(capability) == "" {
-			return fmt.Errorf("manifest.json: capabilities contains an empty value")
-		}
-	}
 	return nil
 }
 
@@ -173,6 +177,25 @@ func (f ConfigField) validate(name string) error {
 	default:
 		return fmt.Errorf("manifest.json: config field %q: unsupported type %q", name, f.Type)
 	}
+	switch f.Format {
+	case "":
+	case ConfigFormatInteger:
+		if f.Type != "number" {
+			return fmt.Errorf("manifest.json: config field %q: integer format requires a number", name)
+		}
+	case ConfigFormatWritableDirectory:
+		if f.Type != "string" || f.Secret {
+			return fmt.Errorf("manifest.json: config field %q: writable-directory format requires a non-secret string", name)
+		}
+	default:
+		return fmt.Errorf("manifest.json: config field %q: unsupported format %q", name, f.Format)
+	}
+	if (f.Min != nil || f.Max != nil) && f.Type != "number" {
+		return fmt.Errorf("manifest.json: config field %q: min and max require a number", name)
+	}
+	if f.Min != nil && f.Max != nil && *f.Min > *f.Max {
+		return fmt.Errorf("manifest.json: config field %q: min exceeds max", name)
+	}
 	if _, err := f.DefaultValue(); err != nil {
 		return fmt.Errorf("manifest.json: config field %q: %w", name, err)
 	}
@@ -188,7 +211,7 @@ func (f ConfigField) DefaultValue() (any, error) {
 	if err := json.Unmarshal(f.Default, &value); err != nil {
 		return nil, fmt.Errorf("invalid default: %w", err)
 	}
-	return NormalizeValue(f.Type, value)
+	return f.NormalizeValue(value)
 }
 
 // Defaults returns the configuration defaults declared by the manifest.
@@ -208,7 +231,28 @@ func (m *Manifest) Defaults() (map[string]any, error) {
 
 // NormalizeValue checks that value matches the declared type and returns its canonical form.
 func (f ConfigField) NormalizeValue(value any) (any, error) {
-	return NormalizeValue(f.Type, value)
+	normalized, err := NormalizeValue(f.Type, value)
+	if err != nil {
+		return nil, err
+	}
+	if path, ok := normalized.(string); ok && f.Format == ConfigFormatWritableDirectory && path != "" {
+		if !filepath.IsAbs(path) || strings.ContainsRune(path, 0) {
+			return nil, fmt.Errorf("目录无法使用：请填写宿主机绝对路径")
+		}
+		return filepath.Clean(path), nil
+	}
+	if number, ok := normalized.(float64); ok {
+		if f.Format == ConfigFormatInteger && number != math.Trunc(number) {
+			return nil, fmt.Errorf("请输入整数")
+		}
+		if f.Min != nil && number < *f.Min {
+			return nil, fmt.Errorf("数值必须大于或等于 %g", *f.Min)
+		}
+		if f.Max != nil && number > *f.Max {
+			return nil, fmt.Errorf("数值必须小于或等于 %g", *f.Max)
+		}
+	}
+	return normalized, nil
 }
 
 // NormalizeValue checks a plain JSON value against a configuration type.

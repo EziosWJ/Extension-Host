@@ -14,8 +14,7 @@ func TestParseValid(t *testing.T) {
 		"version": "0.1.0",
 		"hostApi": {"min": 1, "max": 1},
 		"entry": {"web": "web/index.html", "lua": "lua/init.lua"},
-		"config": {"greeting": {"type": "string", "default": "hi"}},
-		"capabilities": ["storage"]
+		"config": {"greeting": {"type": "string", "default": "hi"}}
 	}`)
 	parsed, err := Parse(data)
 	if err != nil {

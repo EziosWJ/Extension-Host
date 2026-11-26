@@ -6,12 +6,15 @@ import (
 	"os/exec"
 )
 
-// PluginBackend is the service surface exposed to plugins. Restart runs as the
-// host account unless elevated is true and the host is not already root.
+// PluginBackend is the service surface exposed to plugins. Start, Stop and
+// Restart run as the host account unless elevated is true and the host is not root.
 type PluginBackend interface {
 	List(ctx context.Context) ([]Service, error)
 	Detail(ctx context.Context, unit string) (ServiceDetail, error)
+	Start(ctx context.Context, unit string, elevated bool) error
+	Stop(ctx context.Context, unit string, elevated bool) error
 	Restart(ctx context.Context, unit string, elevated bool) error
+	Logs(ctx context.Context, unit string, lines int) ([]string, error)
 }
 
 type pluginSystemdBackend struct {
@@ -30,18 +33,38 @@ func (b *pluginSystemdBackend) Detail(ctx context.Context, unit string) (Service
 	return b.runtime.detail(ctx, unit)
 }
 
+func (b *pluginSystemdBackend) Start(ctx context.Context, unit string, elevated bool) error {
+	cmd, usedSudo := serviceCommand(ctx, b.runtime.systemctl, ActionStart, unit, elevated, os.Geteuid() == 0)
+	_, err := runCommand(ctx, cmd, usedSudo)
+	return err
+}
+
+func (b *pluginSystemdBackend) Stop(ctx context.Context, unit string, elevated bool) error {
+	cmd, usedSudo := serviceCommand(ctx, b.runtime.systemctl, ActionStop, unit, elevated, os.Geteuid() == 0)
+	_, err := runCommand(ctx, cmd, usedSudo)
+	return err
+}
+
 func (b *pluginSystemdBackend) Restart(ctx context.Context, unit string, elevated bool) error {
 	cmd, usedSudo := restartCommand(ctx, b.runtime.systemctl, unit, elevated, os.Geteuid() == 0)
 	_, err := runCommand(ctx, cmd, usedSudo)
 	return err
 }
 
-// restartCommand builds the plugin restart command without executing it. When
+func (b *pluginSystemdBackend) Logs(ctx context.Context, unit string, lines int) ([]string, error) {
+	return b.runtime.logs(ctx, unit, lines)
+}
+
+func restartCommand(ctx context.Context, systemctl, unit string, elevated, root bool) (*exec.Cmd, bool) {
+	return serviceCommand(ctx, systemctl, ActionRestart, unit, elevated, root)
+}
+
+// serviceCommand builds the plugin service command without executing it. When
 // elevation is requested and the process is not root, the same systemctl
 // invocation runs through non-interactive sudo. No sudo probe runs first, so a
-// restricted sudoers rule that allows only this unit restart still works.
-func restartCommand(ctx context.Context, systemctl, unit string, elevated, root bool) (*exec.Cmd, bool) {
-	args := []string{"restart", "--no-ask-password", "--", unit}
+// restricted sudoers rule can allow individual actions and units.
+func serviceCommand(ctx context.Context, systemctl string, action Action, unit string, elevated, root bool) (*exec.Cmd, bool) {
+	args := []string{string(action), "--no-ask-password", "--", unit}
 	if elevated && !root {
 		sudoArgs := append([]string{"-n", "-k", "-u", "root", "--", systemctl}, args...)
 		return exec.CommandContext(ctx, "/usr/bin/sudo", sudoArgs...), true
@@ -59,4 +82,9 @@ func (nonePluginBackend) Detail(context.Context, string) (ServiceDetail, error) 
 	return ServiceDetail{}, unavailable()
 }
 
+func (nonePluginBackend) Start(context.Context, string, bool) error   { return unavailable() }
+func (nonePluginBackend) Stop(context.Context, string, bool) error    { return unavailable() }
 func (nonePluginBackend) Restart(context.Context, string, bool) error { return unavailable() }
+func (nonePluginBackend) Logs(context.Context, string, int) ([]string, error) {
+	return nil, unavailable()
+}

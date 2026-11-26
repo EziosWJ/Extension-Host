@@ -1,0 +1,16 @@
+PLUGIN := native/plugin
+
+.PHONY: build dev pkg clean
+
+build:
+	mkdir -p native
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(PLUGIN) ./backend
+
+dev: build
+	ext dev
+
+pkg: build
+	ext pkg
+
+clean:
+	rm -rf $(PLUGIN) dist

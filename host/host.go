@@ -3,7 +3,6 @@ package host
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 	"time"
 
@@ -54,45 +52,15 @@ const (
 	StatusFailed   Status = Status(lifecycle.StatusFailed)
 )
 
-// ServiceGrant grants one plugin access to a subset of systemd units.
-type ServiceGrant struct {
-	// Units lists the service unit names the plugin may access.
-	Units []string `json:"units"`
-	// Actions lists the allowed operations: "list", "get" and/or "restart".
-	Actions []string `json:"actions"`
-	// Elevate lists granted actions that run through non-interactive sudo.
-	// Only "restart" is used.
-	Elevate []string `json:"elevate,omitempty"`
-}
-
 // Options configures a Host.
 type Options struct {
 	// DataDir holds host.db, packages, plugin data and logs.
 	DataDir string
 	// Logger records host lifecycle events. Defaults to slog.Default.
 	Logger *slog.Logger
-	// ServiceGrants grants per-plugin service access, keyed by plugin ID.
-	ServiceGrants map[string]ServiceGrant
 	// ServiceBackend overrides the plugin service backend. Defaults to
 	// services.OpenPlugin("auto").
 	ServiceBackend services.PluginBackend
-}
-
-// LoadServiceGrantsFile reads service grants from a JSON object keyed by
-// plugin ID. An empty path returns nil without reading a file.
-func LoadServiceGrantsFile(path string) (map[string]ServiceGrant, error) {
-	if path == "" {
-		return nil, nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("host: read service grants: %w", err)
-	}
-	grants := make(map[string]ServiceGrant)
-	if err := json.Unmarshal(data, &grants); err != nil {
-		return nil, fmt.Errorf("host: parse service grants %s: %w", path, err)
-	}
-	return grants, nil
 }
 
 // HTTPOptions configures the extension HTTP handler.
@@ -155,9 +123,6 @@ func Open(ctx context.Context, opts Options) (*Host, error) {
 	if opts.DataDir == "" {
 		return nil, errors.New("host: data directory is required")
 	}
-	if err := validateServiceGrants(opts.ServiceGrants); err != nil {
-		return nil, err
-	}
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
@@ -181,10 +146,10 @@ func Open(ctx context.Context, opts Options) (*Host, error) {
 		return nil, err
 	}
 	manager, err := lifecycle.New(ctx, lifecycle.Options{
-		DataDir:           dataDir,
-		Store:             database,
-		Logger:            logger,
-		ServicesForPlugin: serviceGrantResolver(opts.ServiceGrants, serviceBackend),
+		DataDir:  dataDir,
+		Store:    database,
+		Logger:   logger,
+		Services: &serviceaccess.Access{Backend: serviceBackend},
 	})
 	if err != nil {
 		_ = database.Close()
@@ -287,7 +252,7 @@ func (h *Host) Disable(ctx context.Context, id string) error {
 	return h.manager.Disable(ctx, id)
 }
 
-// Uninstall removes the plugin package, configuration and grants.
+// Uninstall removes the plugin package and configuration.
 func (h *Host) Uninstall(ctx context.Context, id string, opts UninstallOptions) error {
 	return h.manager.Uninstall(ctx, id, opts.PurgeData)
 }
@@ -300,82 +265,6 @@ func (h *Host) Close(ctx context.Context) error {
 		h.closeErr = errors.Join(managerErr, storeErr)
 	})
 	return h.closeErr
-}
-
-var serviceGrantActions = map[string]bool{"list": true, "get": true, "restart": true}
-
-func validateServiceGrants(grants map[string]ServiceGrant) error {
-	ids := make([]string, 0, len(grants))
-	for id := range grants {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		grant := grants[id]
-		if id == "" {
-			return errors.New("host: service grant has an empty plugin id")
-		}
-		granted := make(map[string]bool, len(grant.Actions))
-		for _, action := range grant.Actions {
-			if !serviceGrantActions[action] {
-				return fmt.Errorf("host: service grant for plugin %q: invalid action %q (want list, get or restart)", id, action)
-			}
-			granted[action] = true
-		}
-		for _, unit := range grant.Units {
-			if !services.ValidUnit(unit) {
-				return fmt.Errorf("host: service grant for plugin %q: invalid unit %q", id, unit)
-			}
-		}
-		for _, action := range grant.Elevate {
-			if !granted[action] {
-				return fmt.Errorf("host: service grant for plugin %q: elevate action %q is not granted", id, action)
-			}
-		}
-	}
-	return nil
-}
-
-func serviceGrantResolver(grants map[string]ServiceGrant, backend services.PluginBackend) func(string, []string) *serviceaccess.Access {
-	return func(pluginID string, capabilities []string) *serviceaccess.Access {
-		if !declaresCapability(capabilities, "services") {
-			return nil
-		}
-		grant, ok := grants[pluginID]
-		if !ok {
-			return nil
-		}
-		units := make(map[string]serviceaccess.Permissions, len(grant.Units))
-		for _, unit := range grant.Units {
-			permissions := serviceaccess.Permissions{}
-			for _, action := range grant.Actions {
-				switch action {
-				case "list":
-					permissions.List = true
-				case "get":
-					permissions.Get = true
-				case "restart":
-					permissions.Restart = true
-				}
-			}
-			for _, action := range grant.Elevate {
-				if action == "restart" {
-					permissions.RestartElevated = true
-				}
-			}
-			units[unit] = permissions
-		}
-		return &serviceaccess.Access{Backend: backend, Units: units}
-	}
-}
-
-func declaresCapability(capabilities []string, name string) bool {
-	for _, capability := range capabilities {
-		if capability == name {
-			return true
-		}
-	}
-	return false
 }
 
 func pluginFromView(view lifecycle.View) Plugin {

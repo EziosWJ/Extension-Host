@@ -14,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/EziosWJ/Extension-Host/internal/serviceaccess"
 )
 
 const (
@@ -30,7 +28,6 @@ type Options struct {
 	DataDir    string
 	Log        io.Writer
 	Config     func() map[string]any
-	Services   *serviceaccess.Access
 	Exports    []string
 	WebAPI     bool
 }

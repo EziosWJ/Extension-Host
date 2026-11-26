@@ -58,6 +58,46 @@ func TestRestartCommand(t *testing.T) {
 	}
 }
 
+func TestServiceCommand(t *testing.T) {
+	const (
+		systemctl = "/usr/bin/systemctl"
+		unit      = "caddy.service"
+		sudo      = "/usr/bin/sudo"
+	)
+	for _, action := range []Action{ActionStart, ActionStop, ActionRestart} {
+		for _, tc := range []struct {
+			name           string
+			elevated, root bool
+			wantSudo       bool
+		}{
+			{name: "host account"},
+			{name: "elevated", elevated: true, wantSudo: true},
+			{name: "root", root: true},
+			{name: "elevated root", elevated: true, root: true},
+		} {
+			t.Run(string(action)+"/"+tc.name, func(t *testing.T) {
+				wantArgs := []string{systemctl, string(action), "--no-ask-password", "--", unit}
+				if tc.wantSudo {
+					wantArgs = append([]string{sudo, "-n", "-k", "-u", "root", "--"}, wantArgs...)
+				}
+				cmd, usedSudo := serviceCommand(context.Background(), systemctl, action, unit, tc.elevated, tc.root)
+				if cmd.Path != wantArgs[0] || !reflect.DeepEqual(cmd.Args, wantArgs) || usedSudo != tc.wantSudo {
+					t.Fatalf("command = %q %q (sudo %v), want %q (sudo %v)", cmd.Path, cmd.Args, usedSudo, wantArgs, tc.wantSudo)
+				}
+			})
+		}
+	}
+}
+
+func TestPluginLogsUnavailable(t *testing.T) {
+	backend := newPluginSystemd("/usr/bin/systemctl", "")
+	_, err := backend.Logs(context.Background(), "caddy.service", 200)
+	var serviceErr *Error
+	if !errors.As(err, &serviceErr) || serviceErr.Code != "logs_unavailable" {
+		t.Fatalf("Logs() error = %v, want logs_unavailable", err)
+	}
+}
+
 func TestOpenPluginNoneBackend(t *testing.T) {
 	p := probe{
 		systemdDir: func() bool { return false },

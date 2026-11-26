@@ -94,6 +94,14 @@ func (s *Scheduler) Register(name, expr string, run func() error) error {
 	return nil
 }
 
+// Next reports the next activation of a registered job.
+func (s *Scheduler) Next(name string) time.Time {
+	if j := s.jobs[name]; j != nil {
+		return s.cron.Entry(j.id).Next
+	}
+	return time.Time{}
+}
+
 // Unregister removes the schedule named name and reports whether it existed.
 func (s *Scheduler) Unregister(name string) bool {
 	j, exists := s.jobs[name]

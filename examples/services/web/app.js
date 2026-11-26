@@ -50,7 +50,7 @@ async function loadList() {
     const items = await call("list");
     tableBody.replaceChildren();
     if (!Array.isArray(items) || items.length === 0) {
-      listStatus.textContent = "没有已授权且可见的服务单元。";
+      listStatus.textContent = "没有可显示的服务单元。";
       return;
     }
     for (const item of items) {

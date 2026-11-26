@@ -54,25 +54,22 @@ type View struct {
 
 // Options configures a Manager.
 type Options struct {
-	DataDir string
-	Store   *store.Store
-	Logger  *slog.Logger
-	// ServicesForPlugin resolves the service access granted to a plugin. It
-	// receives the plugin ID and the capabilities declared by its manifest. A
-	// nil result means the plugin has no access to host.services.
-	ServicesForPlugin func(pluginID string, manifestCapabilities []string) *serviceaccess.Access
+	DataDir  string
+	Store    *store.Store
+	Logger   *slog.Logger
+	Services *serviceaccess.Access
 }
 
 // Manager manages plugin installations and instances.
 type Manager struct {
-	dataDir           string
-	packagesDir       string
-	pluginsDir        string
-	logsDir           string
-	store             *store.Store
-	logger            *slog.Logger
-	servicesForPlugin func(pluginID string, manifestCapabilities []string) *serviceaccess.Access
-	native            *native.Server
+	dataDir     string
+	packagesDir string
+	pluginsDir  string
+	logsDir     string
+	store       *store.Store
+	logger      *slog.Logger
+	services    *serviceaccess.Access
+	native      *native.Server
 
 	mu     sync.Mutex
 	states map[string]*state
@@ -102,17 +99,17 @@ func New(ctx context.Context, opts Options) (*Manager, error) {
 		opts.Logger = slog.Default()
 	}
 	manager := &Manager{
-		dataDir:           opts.DataDir,
-		packagesDir:       filepath.Join(opts.DataDir, "packages"),
-		pluginsDir:        filepath.Join(opts.DataDir, "plugins"),
-		logsDir:           filepath.Join(opts.DataDir, "logs"),
-		store:             opts.Store,
-		logger:            opts.Logger,
-		servicesForPlugin: opts.ServicesForPlugin,
-		states:            make(map[string]*state),
-		locks:             make(map[string]*sync.Mutex),
+		dataDir:     opts.DataDir,
+		packagesDir: filepath.Join(opts.DataDir, "packages"),
+		pluginsDir:  filepath.Join(opts.DataDir, "plugins"),
+		logsDir:     filepath.Join(opts.DataDir, "logs"),
+		store:       opts.Store,
+		logger:      opts.Logger,
+		services:    opts.Services,
+		states:      make(map[string]*state),
+		locks:       make(map[string]*sync.Mutex),
 	}
-	manager.native = native.New(manager.logger, manager.nativeInstance)
+	manager.native = native.New(manager.logger, manager.nativeInstance, manager.services)
 	for _, dir := range []string{manager.dataDir, manager.packagesDir, manager.pluginsDir, manager.logsDir} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("create host data directory: %w", err)
@@ -482,6 +479,14 @@ func (m *Manager) UpdateConfig(ctx context.Context, id string, values map[string
 	if err != nil {
 		return View{}, err
 	}
+	for name := range values {
+		path, _ := merged[name].(string)
+		if state.manifest.Config[name].Format == manifest.ConfigFormatWritableDirectory && path != "" {
+			if err := verifyWritableDirectory(path); err != nil {
+				return View{}, fmt.Errorf("%s：目录无法使用：%w", name, err)
+			}
+		}
+	}
 	if err := m.store.SetConfig(ctx, id, merged); err != nil {
 		return View{}, err
 	}
@@ -490,6 +495,18 @@ func (m *Manager) UpdateConfig(ctx context.Context, id string, values map[string
 	view := m.viewLocked(state)
 	m.mu.Unlock()
 	return view, nil
+}
+
+func verifyWritableDirectory(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(path, ".extension-host-write-*")
+	if err != nil {
+		return err
+	}
+	_, writeErr := file.WriteString("write test")
+	return errors.Join(writeErr, file.Close(), os.Remove(file.Name()))
 }
 
 // RunningInstance returns the live instance for a plugin.
@@ -578,10 +595,6 @@ func (m *Manager) startLocked(ctx context.Context, state *state) error {
 	logPath := state.logPath
 	m.mu.Unlock()
 
-	var servicesOptions *serviceaccess.Access
-	if m.servicesForPlugin != nil {
-		servicesOptions = m.servicesForPlugin(record.ID, parsed.Capabilities)
-	}
 	instance := newInstance(instanceOptions{
 		id:         record.ID,
 		version:    record.Version,
@@ -590,7 +603,7 @@ func (m *Manager) startLocked(ctx context.Context, state *state) error {
 		pluginDir:  filepath.Join(m.pluginsDir, record.ID),
 		logPath:    logPath,
 		config:     m.configGetter(state),
-		services:   servicesOptions,
+		services:   m.services,
 		nativeHost: m.native,
 	})
 	if err := instance.Start(ctx); err != nil {

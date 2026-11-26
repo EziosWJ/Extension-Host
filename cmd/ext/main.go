@@ -80,7 +80,6 @@ Usage:
 
 Serve, run and dev flags:
   --listen string          HTTP listen address (default "127.0.0.1:5001")
-  --service-grants string  JSON file granting plugins access to systemd units
 
 Serve and run only:
   --data-dir string        host data directory (default "./ext-data")
@@ -96,11 +95,9 @@ Examples:
 func serve(ctx context.Context, args []string) error {
 	listen := "127.0.0.1:5001"
 	dataDir := "./ext-data"
-	grantsFile := ""
 	positional, err := parseFlags(args, []stringFlag{
 		{names: []string{"listen"}, value: &listen},
 		{names: []string{"data-dir"}, value: &dataDir},
-		{names: []string{"service-grants"}, value: &grantsFile},
 	})
 	if err != nil {
 		return err
@@ -108,12 +105,7 @@ func serve(ctx context.Context, args []string) error {
 	if len(positional) != 0 {
 		return fmt.Errorf("serve accepts no positional arguments")
 	}
-	grants, err := host.LoadServiceGrantsFile(grantsFile)
-	if err != nil {
-		return err
-	}
-
-	extensionHost, err := host.Open(ctx, host.Options{DataDir: dataDir, ServiceGrants: grants})
+	extensionHost, err := host.Open(ctx, host.Options{DataDir: dataDir})
 	if err != nil {
 		return err
 	}
@@ -127,11 +119,9 @@ func serve(ctx context.Context, args []string) error {
 func runPlugin(ctx context.Context, args []string) error {
 	listen := "127.0.0.1:5001"
 	dataDir := "./ext-data"
-	grantsFile := ""
 	positional, err := parseFlags(args, []stringFlag{
 		{names: []string{"listen"}, value: &listen},
 		{names: []string{"data-dir"}, value: &dataDir},
-		{names: []string{"service-grants"}, value: &grantsFile},
 	})
 	if err != nil {
 		return err
@@ -146,12 +136,7 @@ func runPlugin(ctx context.Context, args []string) error {
 	if err := pkg.Manifest.CheckCompatibility(); err != nil {
 		return err
 	}
-	grants, err := host.LoadServiceGrantsFile(grantsFile)
-	if err != nil {
-		return err
-	}
-
-	extensionHost, err := host.Open(ctx, host.Options{DataDir: dataDir, ServiceGrants: grants})
+	extensionHost, err := host.Open(ctx, host.Options{DataDir: dataDir})
 	if err != nil {
 		return err
 	}
@@ -263,9 +248,6 @@ func validate(args []string) error {
 	fmt.Printf("plugin: %s (%s) %s\n", pkg.Manifest.Name, pkg.Manifest.ID, pkg.Manifest.Version)
 	fmt.Printf("host api: %d-%d\n", pkg.Manifest.HostAPI.Min, pkg.Manifest.HostAPI.Max)
 	fmt.Printf("entries: %s\n", strings.Join(entries, ", "))
-	if len(pkg.Manifest.Capabilities) > 0 {
-		fmt.Printf("capabilities: %s\n", strings.Join(pkg.Manifest.Capabilities, ", "))
-	}
 	fmt.Printf("files: %d\n", len(pkg.Files))
 	fmt.Println("OK: manifest, entries and package paths are valid")
 	return nil

@@ -43,10 +43,8 @@ type fileStamp struct {
 
 func develop(ctx context.Context, args []string) error {
 	listen := "127.0.0.1:5001"
-	grantsFile := ""
 	positional, err := parseFlags(args, []stringFlag{
 		{names: []string{"listen"}, value: &listen},
-		{names: []string{"service-grants"}, value: &grantsFile},
 	})
 	if err != nil {
 		return err
@@ -66,13 +64,8 @@ func develop(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	grants, err := host.LoadServiceGrantsFile(grantsFile)
-	if err != nil {
-		return err
-	}
-
 	dataDir := filepath.Join(project, ".ext")
-	extensionHost, err := host.Open(ctx, host.Options{DataDir: dataDir, ServiceGrants: grants})
+	extensionHost, err := host.Open(ctx, host.Options{DataDir: dataDir})
 	if err != nil {
 		return err
 	}

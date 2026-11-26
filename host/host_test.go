@@ -407,7 +407,7 @@ end)
 	if status != http.StatusInternalServerError {
 		t.Fatalf("status = %d, %q", status, body)
 	}
-	if !strings.Contains(body, "host.http.request is not authorized") {
+	if !strings.Contains(body, "host.http.request is not implemented") {
 		t.Fatalf("error = %q", body)
 	}
 }

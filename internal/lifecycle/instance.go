@@ -103,7 +103,7 @@ func (i *Instance) Start(ctx context.Context) error {
 		process, err := i.nativeHost.Start(ctx, native.Options{
 			ID: i.id, Executable: filepath.Join(i.packageDir, filepath.FromSlash(i.nativeEntry)),
 			PackageDir: i.packageDir, DataDir: i.dataDir, Config: i.config,
-			Log: file, Services: i.services, Exports: i.nativeSpec.Exports, WebAPI: i.nativeSpec.WebAPI,
+			Log: file, Exports: i.nativeSpec.Exports, WebAPI: i.nativeSpec.WebAPI,
 		})
 		if err != nil {
 			i.logger.Error("start native plugin", "error", err)

@@ -6,15 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
+	htmltemplate "html/template"
 	"io"
 	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	texttemplate "text/template"
 	"unicode"
 
 	"github.com/EziosWJ/Extension-Host/internal/bundle"
@@ -25,15 +27,18 @@ import (
 var projectTemplates embed.FS
 
 type projectType struct {
-	label string
-	web   bool
-	lua   bool
+	label  string
+	web    bool
+	lua    bool
+	native bool
 }
 
 var projectTypes = []projectType{
 	{label: "网页 + Lua", web: true, lua: true},
 	{label: "只有网页", web: true},
 	{label: "只有 Lua", lua: true},
+	{label: "网页 + 原生后端", web: true, native: true},
+	{label: "只有原生后端", native: true},
 }
 
 func initProject(args []string, in io.Reader, out io.Writer) error {
@@ -67,7 +72,7 @@ func initProject(args []string, in io.Reader, out io.Writer) error {
 	}
 	index, err := strconv.Atoi(option)
 	if err != nil || index < 1 || index > len(projectTypes) {
-		return errors.New("请选择模板 1、2 或 3")
+		return fmt.Errorf("请选择模板 1 到 %d", len(projectTypes))
 	}
 	name, err := read("插件名称：")
 	if err != nil {
@@ -87,13 +92,28 @@ func initProject(args []string, in io.Reader, out io.Writer) error {
 		}
 		return fmt.Errorf("创建插件目录 %q：%w", name, err)
 	}
-	if err := createProject(name, id, name, projectTypes[index-1]); err != nil {
+	kind := projectTypes[index-1]
+	if err := createProject(name, id, name, kind); err != nil {
 		_ = os.Remove(name)
 		return err
 	}
-	fmt.Fprintf(out, "项目已创建。进入目录后运行 dev 或 pkg：\n  cd './%s'\n  ext dev\n",
-		strings.ReplaceAll(name, "'", "'\\''"))
+	quotedName := strings.ReplaceAll(name, "'", "'\\''")
+	if kind.native {
+		fmt.Fprintf(out, "项目已创建。进入目录后运行 make dev 或 make pkg：\n  cd './%s'\n  make dev\n", quotedName)
+	} else {
+		fmt.Fprintf(out, "项目已创建。进入目录后运行 dev 或 pkg：\n  cd './%s'\n  ext dev\n", quotedName)
+	}
 	return nil
+}
+
+func nativePlatform() (string, error) {
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+	switch platform {
+	case "linux-amd64", "linux-arm64":
+		return platform, nil
+	default:
+		return "", fmt.Errorf("原生模板仅支持 linux-amd64 和 linux-arm64，当前平台为 %s", platform)
+	}
 }
 
 func createProject(directory, id, name string, kind projectType) error {
@@ -110,6 +130,21 @@ func createProject(directory, id, name string, kind projectType) error {
 	if kind.lua {
 		metadata.Entry.Lua = "lua/init.lua"
 	}
+	platform := ""
+	if kind.native {
+		var err error
+		platform, err = nativePlatform()
+		if err != nil {
+			return err
+		}
+		metadata.Entry.Native = "native/plugin"
+		metadata.MinHostVersion = manifest.Version
+		metadata.Native = &manifest.Native{
+			Platform: platform,
+			Exports:  []string{"v1.ping"},
+			WebAPI:   kind.web,
+		}
+	}
 	if err := metadata.Validate(); err != nil {
 		return err
 	}
@@ -121,43 +156,72 @@ func createProject(directory, id, name string, kind projectType) error {
 	if kind.web {
 		templateFiles["web/index.html"] = "index.html"
 		templateFiles["web/style.css"] = "style.css"
-		if kind.lua {
+		if kind.lua || kind.native {
 			templateFiles["web/app.js"] = "app.js"
 		}
 	}
 	if kind.lua {
 		templateFiles["lua/init.lua"] = "init.lua"
 	}
+	if kind.native {
+		templateFiles["backend/main.go"] = "native.go.tmpl"
+		templateFiles["go.mod"] = "go.mod.tmpl"
+		templateFiles["Makefile"] = "Makefile.tmpl"
+	}
+	gitignore := "/.ext/\n/dist/\n"
+	if kind.native {
+		gitignore += "/native/plugin\n"
+	}
 	files := map[string][]byte{
 		"manifest.json": append(manifestJSON, '\n'),
-		".gitignore":    []byte("/.ext/\n/dist/\n"),
+		".gitignore":    []byte(gitignore),
 	}
 	details := struct {
-		ID   string
-		Name string
-		Web  bool
-		Lua  bool
-	}{id, name, kind.web, kind.lua}
+		ID       string
+		Name     string
+		Web      bool
+		Lua      bool
+		Native   bool
+		Platform string
+	}{id, name, kind.web, kind.lua, kind.native, platform}
 	for path, source := range templateFiles {
 		data, err := projectTemplates.ReadFile("templates/" + source)
 		if err != nil {
 			return err
 		}
-		if source != "README.md" && source != "index.html" {
+		if source != "README.md" && source != "index.html" && source != "native.go.tmpl" {
 			files[path] = data
 			continue
 		}
-		var rendered strings.Builder
-		tmpl, err := template.New(source).Parse(string(data))
+		rendered, err := renderProjectTemplate(source, data, details)
 		if err != nil {
 			return err
 		}
-		if err := tmpl.Execute(&rendered, details); err != nil {
-			return err
-		}
-		files[path] = []byte(rendered.String())
+		files[path] = rendered
 	}
 	return writeProject(directory, files)
+}
+
+func renderProjectTemplate(name string, data []byte, details any) ([]byte, error) {
+	var rendered strings.Builder
+	if name == "native.go.tmpl" || name == "README.md" {
+		tmpl, err := texttemplate.New(name).Parse(string(data))
+		if err != nil {
+			return nil, err
+		}
+		if err := tmpl.Execute(&rendered, details); err != nil {
+			return nil, err
+		}
+		return []byte(rendered.String()), nil
+	}
+	tmpl, err := htmltemplate.New(name).Parse(string(data))
+	if err != nil {
+		return nil, err
+	}
+	if err := tmpl.Execute(&rendered, details); err != nil {
+		return nil, err
+	}
+	return []byte(rendered.String()), nil
 }
 
 func writeProject(directory string, files map[string][]byte) error {

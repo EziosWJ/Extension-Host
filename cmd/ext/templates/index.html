@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.Name}}</title>
   <link rel="stylesheet" href="./style.css">
-  {{- if .Lua }}
+  {{- if or .Lua .Native }}
   <script defer src="./app.js"></script>
   {{- end }}
 </head>
@@ -14,6 +14,9 @@
     <h1>{{.Name}}</h1>
     {{- if .Lua }}
     <button id="call" type="button">调用 Lua</button>
+    <p id="result" role="status"></p>
+    {{- else if .Native }}
+    <button id="call" type="button">调用后端</button>
     <p id="result" role="status"></p>
     {{- else }}
     <p>你好，插件已运行。</p>

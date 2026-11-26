@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -37,14 +38,9 @@ func TestNativePluginLifecycleAndCalls(t *testing.T) {
 		services: []services.Service{{Name: "alpha.service"}, {Name: "beta.service"}},
 		detail:   services.ServiceDetail{Name: "alpha.service"},
 	}
-	grants := map[string]host.ServiceGrant{
-		nativeConsumer: {
-			Units: []string{"alpha.service"}, Actions: []string{"list", "get", "restart"}, Elevate: []string{"restart"},
-		},
-	}
 	open := func() *host.Host {
 		t.Helper()
-		h, err := host.Open(ctx, host.Options{DataDir: dataDir, ServiceBackend: backend, ServiceGrants: grants})
+		h, err := host.Open(ctx, host.Options{DataDir: dataDir, ServiceBackend: backend})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -83,14 +79,14 @@ func TestNativePluginLifecycleAndCalls(t *testing.T) {
 	}
 	assertNativeRequest(t, source, "GET", "/v1/context", "", 200, "test-secret")
 	result := assertNativeRequest(t, source, "GET", "/v1/services", "", 200, "alpha.service")
-	if strings.Contains(result, "beta.service") {
-		t.Fatalf("unexpected service in list: %s", result)
+	if !strings.Contains(result, "beta.service") {
+		t.Fatalf("missing service in list: %s", result)
 	}
 	assertNativeRequest(t, source, "GET", "/v1/services/alpha.service", "", 200, "alpha.service")
-	assertNativeRequest(t, source, "GET", "/v1/services/beta.service", "", 403, "forbidden")
-	assertNativeRequest(t, source, "POST", "/v1/services/beta.service/restart", "", 403, "forbidden")
-	assertNativeRequest(t, source, "POST", "/v1/services/alpha.service/restart", "", 204, "")
-	assertNativeRequest(t, target, "GET", "/v1/services", "", 403, "forbidden")
+	assertNativeRequest(t, source, "GET", "/v1/services/invalid", "", 400, "invalid_unit")
+	assertNativeRequest(t, source, "POST", "/v1/services/invalid/restart", "", 400, "invalid_unit")
+	assertNativeRequest(t, source, "POST", "/v1/services/alpha.service/restart?sudo=true", "", 204, "")
+	assertNativeRequest(t, target, "GET", "/v1/services", "", 200, "beta.service")
 	if calls := backend.restartCalls(); len(calls) != 1 || calls[0] != (fakeRestartCall{unit: "alpha.service", elevated: true}) {
 		t.Fatalf("restart calls: %+v", calls)
 	}
@@ -166,6 +162,67 @@ func TestNativePluginLifecycleAndCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNativeRequest(t, source, "GET", "/v1/context", "", 401, "unauthorized")
+}
+
+func TestNativeServicesStartStopAndLogs(t *testing.T) {
+	ctx := testContext(t)
+	backend := &fakeServiceBackend{}
+	dataDir := t.TempDir()
+	h, err := host.Open(ctx, host.Options{
+		DataDir: dataDir, ServiceBackend: backend,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close(context.Background()) })
+	archive := nativeZip(t, buildNativeFixture(t), nativeConsumer, host.Version, nil, false, nil)
+	if _, err := h.Install(ctx, bytes.NewReader(archive)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Enable(ctx, nativeConsumer); err != nil {
+		t.Fatal(err)
+	}
+	info := readNativeConnection(t, dataDir, nativeConsumer)
+	for _, tc := range []struct {
+		method, path, want string
+		status             int
+	}{
+		{"POST", "alpha.service/start", "", 204},
+		{"POST", "alpha.service/stop?sudo=true", "", 204},
+		{"GET", "alpha.service/logs", "[]", 200},
+		{"GET", "alpha.service/logs?lines=1", "[]", 200},
+		{"GET", "alpha.service/logs?lines=2000", "[]", 200},
+		{"POST", "beta.service/start?sudo=false", "", 204},
+		{"POST", "beta.service/stop?sudo=invalid", "invalid_sudo", 400},
+		{"POST", "beta.service/stop?sudo=true&sudo=false", "invalid_sudo", 400},
+		{"POST", "invalid/start", "invalid_unit", 400},
+		{"POST", "invalid/stop", "invalid_unit", 400},
+		{"GET", "invalid/logs", "invalid_unit", 400},
+		{"GET", "alpha.service/logs?lines=0", "invalid_lines", 400},
+		{"GET", "alpha.service/logs?lines=2001", "invalid_lines", 400},
+		{"GET", "alpha.service/logs?lines=1.5", "invalid_lines", 400},
+		{"GET", "alpha.service/logs?lines=text", "invalid_lines", 400},
+		{"GET", "alpha.service/logs?lines=", "invalid_lines", 400},
+		{"GET", "alpha.service/logs?lines=1&lines=2", "invalid_lines", 400},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			body := assertNativeRequest(t, info, tc.method, "/v1/services/"+tc.path, "", tc.status, tc.want)
+			if tc.status < 300 && strings.TrimSpace(body) != tc.want {
+				t.Fatalf("response body = %q, want %q", body, tc.want)
+			}
+		})
+	}
+	wantCalls := []fakeServiceCall{
+		{action: "start", unit: "alpha.service"},
+		{action: "stop", unit: "alpha.service", elevated: true},
+		{action: "logs", unit: "alpha.service", lines: 200},
+		{action: "logs", unit: "alpha.service", lines: 1},
+		{action: "logs", unit: "alpha.service", lines: 2000},
+		{action: "start", unit: "beta.service"},
+	}
+	if calls := backend.serviceCalls(); !slices.Equal(calls, wantCalls) {
+		t.Fatalf("service calls = %+v, want %+v", calls, wantCalls)
+	}
 }
 
 func TestNativePluginRejectsIncompatiblePackageAndFailedStart(t *testing.T) {
@@ -289,7 +346,7 @@ func nativeZip(t *testing.T, binary []byte, id, version string, methods []string
 	entry := map[string]string{"native": "native/fixture"}
 	metadata := map[string]any{
 		"schemaVersion": 1, "id": id, "name": id, "version": "0.1.0", "minHostVersion": version,
-		"hostApi": map[string]int{"min": 1, "max": 1}, "entry": entry, "capabilities": []string{"services"},
+		"hostApi": map[string]int{"min": 1, "max": 1}, "entry": entry,
 		"native": map[string]any{"platform": "linux-" + runtime.GOARCH, "exports": methods, "webApi": web}, "config": config,
 	}
 	files := map[string][]byte{"native/fixture": binary}

@@ -2,6 +2,7 @@ package lua
 
 import (
 	"strings"
+	"time"
 
 	glua "github.com/yuin/gopher-lua"
 )
@@ -62,6 +63,24 @@ func (r *Runtime) scheduleModule(L *glua.LState) *glua.LTable {
 		}
 		r.schedules[name] = entry
 		L.Push(glua.LTrue)
+		return 1
+	}))
+	module.RawSetString("validate", L.NewFunction(func(L *glua.LState) int {
+		if err := r.scheduler.Validate(L.CheckString(1)); err != nil {
+			L.Push(glua.LNil)
+			L.Push(glua.LString(err.Error()))
+			return 2
+		}
+		L.Push(glua.LTrue)
+		return 1
+	}))
+	module.RawSetString("next", L.NewFunction(func(L *glua.LState) int {
+		next := r.scheduler.Next(L.CheckString(1))
+		if next.IsZero() {
+			L.Push(glua.LNil)
+		} else {
+			L.Push(glua.LString(next.UTC().Format(time.RFC3339)))
+		}
 		return 1
 	}))
 	module.RawSetString("unregister", L.NewFunction(func(L *glua.LState) int {

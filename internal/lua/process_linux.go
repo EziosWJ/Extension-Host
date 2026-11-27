@@ -7,13 +7,31 @@ import (
 	"syscall"
 )
 
-func configureExecCancellation(cmd *exec.Cmd) {
+func configureProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+}
+
+func configureExecCancellation(cmd *exec.Cmd) {
+	configureProcessGroup(cmd)
 	cmd.Cancel = func() error {
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		if errors.Is(err, syscall.ESRCH) {
+		if cmd.Process == nil {
 			return os.ErrProcessDone
 		}
-		return err
+		return signalProcessGroup(cmd.Process.Pid, true)
 	}
+}
+
+func signalProcessGroup(pid int, force bool) error {
+	if pid <= 0 {
+		return os.ErrProcessDone
+	}
+	sig := syscall.SIGTERM
+	if force {
+		sig = syscall.SIGKILL
+	}
+	err := syscall.Kill(-pid, sig)
+	if errors.Is(err, syscall.ESRCH) {
+		return os.ErrProcessDone
+	}
+	return err
 }

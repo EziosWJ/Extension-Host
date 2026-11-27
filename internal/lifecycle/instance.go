@@ -17,7 +17,7 @@ import (
 	"github.com/EziosWJ/Extension-Host/internal/store"
 )
 
-const eventBuffer = 32
+const eventBuffer = 128
 
 // Instance is one running plugin in this host process.
 type Instance struct {
@@ -42,6 +42,7 @@ type Instance struct {
 
 	mu            sync.Mutex
 	subscriptions map[*Subscription]chan []byte
+	onSubscribers func()
 	done          chan struct{}
 	closed        bool
 }
@@ -122,16 +123,19 @@ func (i *Instance) Start(ctx context.Context) error {
 	}
 	i.business = business
 	i.runtime = lua.New(lua.Options{
-		EntryPath:   filepath.Join(i.packageDir, filepath.FromSlash(i.luaEntry)),
-		PackageRoot: i.packageDir,
-		DataDir:     i.dataDir,
-		Logger:      i.logger,
-		Config:      i.config,
-		Storage:     business,
-		Emit:        i.Emit,
-		Services:    i.services,
+		EntryPath:       filepath.Join(i.packageDir, filepath.FromSlash(i.luaEntry)),
+		PackageRoot:     i.packageDir,
+		DataDir:         i.dataDir,
+		Logger:          i.logger,
+		Config:          i.config,
+		Storage:         business,
+		Emit:            i.Emit,
+		SubscriberCount: i.SubscriberCount,
+		Services:        i.services,
 	})
+	i.SetSubscriberObserver(i.runtime.NotifySubscribers)
 	if err := i.runtime.Start(ctx); err != nil {
+		i.SetSubscriberObserver(nil)
 		if !errors.Is(err, lua.ErrExited) {
 			i.logger.Error("start plugin runtime", "error", err)
 		}
@@ -157,6 +161,7 @@ func (i *Instance) Stop(ctx context.Context) error {
 			i.logger.Error("stop plugin runtime", "error", err)
 			errs = append(errs, err)
 		}
+		i.SetSubscriberObserver(nil)
 	}
 	if i.business != nil {
 		if err := i.business.Close(); err != nil {
@@ -225,23 +230,50 @@ func (s *Subscription) Close() {
 	}
 }
 
+// SubscriberCount returns the number of active browser event subscriptions.
+func (i *Instance) SubscriberCount() int {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return len(i.subscriptions)
+}
+
+// SetSubscriberObserver registers a callback invoked after the active
+// subscriber count changes. The callback is called without holding i.mu.
+func (i *Instance) SetSubscriberObserver(fn func()) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.onSubscribers = fn
+}
+
 // Subscribe adds a browser event subscription.
 func (i *Instance) Subscribe() (*Subscription, error) {
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	if i.closed {
+		i.mu.Unlock()
 		return nil, ErrNotRunning
 	}
 	channel := make(chan []byte, eventBuffer)
 	subscription := &Subscription{C: channel, Done: i.done, instance: i, channel: channel}
 	i.subscriptions[subscription] = channel
+	observer := i.onSubscribers
+	i.mu.Unlock()
+	if observer != nil {
+		observer()
+	}
 	return subscription, nil
 }
 
 func (i *Instance) unsubscribe(subscription *Subscription) {
 	i.mu.Lock()
-	defer i.mu.Unlock()
-	delete(i.subscriptions, subscription)
+	_, ok := i.subscriptions[subscription]
+	if ok {
+		delete(i.subscriptions, subscription)
+	}
+	observer := i.onSubscribers
+	i.mu.Unlock()
+	if ok && observer != nil {
+		observer()
+	}
 }
 
 // Emit publishes one event to all current browser subscribers.
@@ -262,7 +294,9 @@ func (i *Instance) Emit(event string, data any) error {
 		select {
 		case channel <- payload:
 		default:
-			i.logger.Warn("dropping plugin event for slow subscriber", "event", event)
+			if i.logger != nil {
+				i.logger.Warn("dropping plugin event for slow subscriber", "event", event)
+			}
 		}
 	}
 	return nil
@@ -271,13 +305,19 @@ func (i *Instance) Emit(event string, data any) error {
 // CloseSubscriptions releases every browser subscription.
 func (i *Instance) CloseSubscriptions() {
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	if i.closed {
+		i.mu.Unlock()
 		return
 	}
 	i.closed = true
+	changed := len(i.subscriptions) > 0
 	i.subscriptions = make(map[*Subscription]chan []byte)
 	close(i.done)
+	observer := i.onSubscribers
+	i.mu.Unlock()
+	if changed && observer != nil {
+		observer()
+	}
 }
 
 // LogPath returns the plugin log file path.

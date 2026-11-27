@@ -44,14 +44,15 @@ type Response struct {
 
 // Options configures a plugin Lua runtime.
 type Options struct {
-	EntryPath   string
-	PackageRoot string
-	DataDir     string
-	Logger      *slog.Logger
-	Config      func() map[string]any
-	Storage     *store.Business
-	Emit        func(event string, data any) error
-	Services    *serviceaccess.Access
+	EntryPath       string
+	PackageRoot     string
+	DataDir         string
+	Logger          *slog.Logger
+	Config          func() map[string]any
+	Storage         *store.Business
+	Emit            func(event string, data any) error
+	SubscriberCount func() int
+	Services        *serviceaccess.Access
 }
 
 // Runtime owns one GopherLua state.
@@ -68,6 +69,13 @@ type Runtime struct {
 	processes    sync.WaitGroup
 	execCtx      context.Context
 	cancelExec   context.CancelFunc
+
+	spawnNotify chan struct{}
+	spawnMu     sync.Mutex
+	spawnQueue  []*spawnedProcess
+
+	subscriberNotify    chan struct{}
+	lastSubscriberCount int
 
 	scheduler     *schedule.Scheduler
 	schedules     map[string]*scheduleEntry
@@ -113,23 +121,25 @@ func New(opts Options) *Runtime {
 	ctx, cancel := context.WithCancel(context.Background())
 	execCtx, cancelExec := context.WithCancel(ctx)
 	return &Runtime{
-		opts:          opts,
-		entryDir:      filepath.Dir(opts.EntryPath),
-		ctx:           ctx,
-		cancel:        cancel,
-		cmds:          make(chan command),
-		ready:         make(chan error, 1),
-		done:          make(chan struct{}),
-		processExits:  make(chan processExit),
-		execCtx:       execCtx,
-		cancelExec:    cancelExec,
-		schedules:     make(map[string]*scheduleEntry),
-		scheduleFires: make(chan scheduleFire),
-		routes:        make(map[string]*glua.LFunction),
-		routeMethods:  make(map[string]map[string]bool),
-		hooks:         make(map[string]*glua.LFunction),
-		modules:       make(map[string]glua.LValue),
-		loading:       make(map[string]bool),
+		opts:             opts,
+		entryDir:         filepath.Dir(opts.EntryPath),
+		ctx:              ctx,
+		cancel:           cancel,
+		cmds:             make(chan command),
+		ready:            make(chan error, 1),
+		done:             make(chan struct{}),
+		processExits:     make(chan processExit),
+		spawnNotify:      make(chan struct{}, 1),
+		subscriberNotify: make(chan struct{}, 1),
+		execCtx:          execCtx,
+		cancelExec:       cancelExec,
+		schedules:        make(map[string]*scheduleEntry),
+		scheduleFires:    make(chan scheduleFire),
+		routes:           make(map[string]*glua.LFunction),
+		routeMethods:     make(map[string]map[string]bool),
+		hooks:            make(map[string]*glua.LFunction),
+		modules:          make(map[string]glua.LValue),
+		loading:          make(map[string]bool),
 	}
 }
 
@@ -218,6 +228,14 @@ func (r *Runtime) Stop(ctx context.Context) error {
 // Done is closed after the Lua state has been released.
 func (r *Runtime) Done() <-chan struct{} { return r.done }
 
+// NotifySubscribers wakes the runtime loop after the active subscriber count changes.
+func (r *Runtime) NotifySubscribers() {
+	select {
+	case r.subscriberNotify <- struct{}{}:
+	default:
+	}
+}
+
 func (r *Runtime) loop() {
 	defer close(r.done)
 	defer func() {
@@ -267,6 +285,18 @@ func (r *Runtime) loop() {
 				r.stopAfterExit(L)
 				return
 			}
+		case <-r.spawnNotify:
+			r.handleSpawnEvent(L)
+			if r.exitRequested {
+				r.stopAfterExit(L)
+				return
+			}
+		case <-r.subscriberNotify:
+			r.handleSubscribersChange(L)
+			if r.exitRequested {
+				r.stopAfterExit(L)
+				return
+			}
 		case fire := <-r.scheduleFires:
 			r.handleScheduleFire(L, fire)
 			if r.exitRequested {
@@ -292,6 +322,7 @@ func (r *Runtime) loop() {
 }
 
 func (r *Runtime) stopAfterExit(L *glua.LState) {
+	r.cancelExec()
 	execution, cancel := context.WithCancel(r.ctx)
 	defer cancel()
 	r.cancelExecution = cancel
@@ -327,6 +358,24 @@ func (r *Runtime) callHook(L *glua.LState, name string) error {
 		return nil
 	}
 	return L.CallByParam(glua.P{Fn: fn, NRet: 0, Protect: true})
+}
+
+func (r *Runtime) handleSubscribersChange(L *glua.LState) {
+	if r.opts.SubscriberCount == nil {
+		return
+	}
+	count := r.opts.SubscriberCount()
+	if count == r.lastSubscriberCount {
+		return
+	}
+	r.lastSubscriberCount = count
+	fn := r.hooks["subscribers"]
+	if fn == nil {
+		return
+	}
+	if err := L.CallByParam(glua.P{Fn: fn, NRet: 0, Protect: true}, glua.LNumber(count)); err != nil && !r.exitRequested {
+		r.opts.Logger.Error("subscribers hook failed", "count", count, "error", err)
+	}
 }
 
 func (r *Runtime) handle(L *glua.LState, req Request) (Response, error) {

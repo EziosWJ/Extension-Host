@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	processOutputLimit = 64 * 1024
-	processWaitDelay   = time.Second
-	defaultExecTimeout = 30 * time.Second
+	processOutputLimit    = 64 * 1024
+	maxProcessOutputLimit = 4 * 1024 * 1024
+	processWaitDelay      = time.Second
+	defaultExecTimeout    = 30 * time.Second
 )
 
 type processExit struct {
@@ -27,6 +28,8 @@ type processExit struct {
 }
 
 func (r *Runtime) processModule(L *glua.LState) *glua.LTable {
+	registerSpawnHandleMetatable(L)
+
 	module := L.NewTable()
 	module.RawSetString("start", L.NewFunction(func(L *glua.LState) int {
 		program := L.CheckString(1)
@@ -36,8 +39,9 @@ func (r *Runtime) processModule(L *glua.LState) *glua.LTable {
 
 		stderr := &processOutput{}
 		cmd := exec.CommandContext(r.ctx, program, args...)
+		configureExecCancellation(cmd)
 		if env := L.OptTable(4, nil); env != nil {
-			cmd.Env = processEnvironment(L, cmd.Environ(), env)
+			cmd.Env = processEnvironment(L, 4, cmd.Environ(), env)
 		}
 		cmd.Stderr = stderr
 		cmd.WaitDelay = processWaitDelay
@@ -52,6 +56,7 @@ func (r *Runtime) processModule(L *glua.LState) *glua.LTable {
 		return 1
 	}))
 	module.RawSetString("exec", L.NewFunction(r.execProcess))
+	module.RawSetString("spawn", L.NewFunction(r.spawnProcess))
 	return module
 }
 
@@ -72,12 +77,49 @@ func processArguments(L *glua.LState, arguments *glua.LTable) []string {
 	return args
 }
 
+func parseProcessCWD(L *glua.LState, argIndex int, value glua.LValue) string {
+	text, ok := value.(glua.LString)
+	if !ok || text == "" || strings.ContainsRune(string(text), 0) {
+		L.ArgError(argIndex, "cwd must be a non-empty string without NUL bytes")
+	}
+	return string(text)
+}
+
+func parseProcessTimeout(L *glua.LState, argIndex int, value glua.LValue) time.Duration {
+	number, ok := value.(glua.LNumber)
+	if !ok || number < 1 || number > glua.LNumber(math.MaxInt64/int64(time.Millisecond)) ||
+		math.Trunc(float64(number)) != float64(number) {
+		L.ArgError(argIndex, "timeoutMs must be a positive integer representable as a duration")
+	}
+	return time.Duration(number) * time.Millisecond
+}
+
+func parseProcessEnvTable(L *glua.LState, argIndex int, value glua.LValue) *glua.LTable {
+	table, ok := value.(*glua.LTable)
+	if !ok {
+		L.ArgError(argIndex, "env must be a table")
+	}
+	return table
+}
+
+func parseProcessOutputLimit(L *glua.LState, argIndex int, value glua.LValue) int {
+	number, ok := value.(glua.LNumber)
+	if !ok || number < 1 || number > maxProcessOutputLimit ||
+		math.Trunc(float64(number)) != float64(number) {
+		L.ArgError(argIndex, "maxOutputBytes must be an integer between 1 and 4194304")
+	}
+	return int(number)
+}
+
 func (r *Runtime) execProcess(L *glua.LState) int {
 	L.CheckType(1, glua.LTString)
 	program := L.CheckString(1)
 	args := processArguments(L, L.CheckTable(2))
 	timeout := defaultExecTimeout
+	outputLimit := processOutputLimit
 	var stdin *strings.Reader
+	var cwd string
+	var envTable *glua.LTable
 	if options := L.OptTable(3, nil); options != nil {
 		if value := options.RawGetString("stdin"); value != glua.LNil {
 			text, ok := value.(glua.LString)
@@ -87,12 +129,16 @@ func (r *Runtime) execProcess(L *glua.LState) int {
 			stdin = strings.NewReader(string(text))
 		}
 		if value := options.RawGetString("timeoutMs"); value != glua.LNil {
-			number, ok := value.(glua.LNumber)
-			if !ok || number < 1 || number > glua.LNumber(math.MaxInt64/int64(time.Millisecond)) ||
-				math.Trunc(float64(number)) != float64(number) {
-				L.ArgError(3, "timeoutMs must be a positive integer representable as a duration")
-			}
-			timeout = time.Duration(number) * time.Millisecond
+			timeout = parseProcessTimeout(L, 3, value)
+		}
+		if value := options.RawGetString("cwd"); value != glua.LNil {
+			cwd = parseProcessCWD(L, 3, value)
+		}
+		if value := options.RawGetString("env"); value != glua.LNil {
+			envTable = parseProcessEnvTable(L, 3, value)
+		}
+		if value := options.RawGetString("maxOutputBytes"); value != glua.LNil {
+			outputLimit = parseProcessOutputLimit(L, 3, value)
 		}
 	}
 
@@ -100,8 +146,15 @@ func (r *Runtime) execProcess(L *glua.LState) int {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, program, args...)
 	configureExecCancellation(cmd)
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
+	if envTable != nil {
+		cmd.Env = processEnvironment(L, 3, cmd.Environ(), envTable)
+	}
 	cmd.WaitDelay = processWaitDelay
-	var stdout, stderr processOutput
+	stdout := processOutput{limit: outputLimit}
+	stderr := processOutput{limit: outputLimit}
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if stdin != nil {
 		cmd.Stdin = stdin
@@ -130,16 +183,16 @@ func (r *Runtime) execProcess(L *glua.LState) int {
 	return 1
 }
 
-func processEnvironment(L *glua.LState, inherited []string, changes *glua.LTable) []string {
+func processEnvironment(L *glua.LState, argIndex int, inherited []string, changes *glua.LTable) []string {
 	overrides := make(map[string]glua.LValue)
 	changes.ForEach(func(key, value glua.LValue) {
 		name, ok := key.(glua.LString)
 		if !ok || name == "" || strings.ContainsAny(string(name), "=\x00") {
-			L.ArgError(4, "invalid environment variable name")
+			L.ArgError(argIndex, "invalid environment variable name")
 		}
 		text, isString := value.(glua.LString)
 		if value != glua.LFalse && (!isString || strings.ContainsRune(string(text), 0)) {
-			L.ArgError(4, "environment values must be strings or false")
+			L.ArgError(argIndex, "environment values must be strings or false")
 		}
 		overrides[string(name)] = value
 	})
@@ -196,12 +249,21 @@ func (r *Runtime) reportProcessExit(L *glua.LState, exit processExit) {
 }
 
 type processOutput struct {
+	limit     int
 	text      strings.Builder
 	truncated bool
 }
 
 func (s *processOutput) Write(chunk []byte) (int, error) {
-	size := min(len(chunk), processOutputLimit-s.text.Len())
+	limit := s.limit
+	if limit <= 0 {
+		limit = processOutputLimit
+	}
+	remaining := limit - s.text.Len()
+	if remaining < 0 {
+		remaining = 0
+	}
+	size := min(len(chunk), remaining)
 	_, _ = s.text.Write(chunk[:size])
 	s.truncated = s.truncated || size < len(chunk)
 	return len(chunk), nil

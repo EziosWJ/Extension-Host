@@ -6,6 +6,7 @@ GoDesk 的插件宿主。仓库提供公共 Go 模块、独立命令 `ext`、最
 
 - 共享契约：[GoDesk 插件首版契约](https://github.com/EziosWJ/GoDesk/blob/main/docs/extensions.md)
 - 原生插件：[打包、运行和调用契约](docs/native-plugins.md)
+- Lua 宿主能力规范：[Lua Host API 最小必要改造 Spec](docs/lua-host-api-minimal-enhancements.md)
 - 前端设计：[Extension Host 与插件前端设计规范](docs/frontend-design.md)
 - 实施顺序：[Extension Host 实施 Spec](https://github.com/EziosWJ/GoDesk/blob/main/.scratch/extension-host/spec.md)
 - 进程与仓库边界：[ADR 0009](https://github.com/EziosWJ/GoDesk/blob/main/docs/adr/0009-embed-extension-host-from-separate-module.md)
@@ -164,12 +165,15 @@ end)
 
 host.app.on("start", function() print("started") end)
 host.app.on("stop", function() print("stopping") end)
+host.app.on("subscribers", function(count) print("subscribers:", count) end)
 host.app.emit("visit", { count = 3 })
+local activeClients = host.app.subscriberCount()
 ```
 
 - `route(method, path, handler)`：路由相对于 `/extensions/{id}/api/`，按方法和精确路径匹配。重复路由、无效方法或路径会在加载时失败。
-- `on(event, handler)`：只支持 `start` 和 `stop`。
+- `on(event, handler)`：支持 `start`、`stop` 和 `subscribers`（浏览器 WebSocket 订阅数变化时在 Lua 主循环串行回调最新数量）。
 - `emit(event, data)`：向当前插件的所有浏览器订阅发送 `{"event": ..., "data": ...}`。没有订阅者时丢弃。
+- `subscriberCount()`：返回当前插件活跃的浏览器 WebSocket 订阅数量。
 
 请求表字段：
 
@@ -194,12 +198,15 @@ end)
 
 - `start(program, args, onExit[, env])` 按独立参数启动命令，继承宿主账号和环境，立即返回子进程 PID。可选的 `env` 表用字符串设置环境变量，用 `false` 移除继承的变量。修改仅对这个子进程生效。启动失败时返回 `nil, error`。
 - 完成回调和 HTTP 处理器在同一个 Lua 实例中串行运行。结果包含 `pid`、`exitCode`、`stderr`，等待出错时还包含 `error`。标准输出默认丢弃，标准错误最多保留开头 64 KiB，截断时提供 `stderrTruncated`。
-- 停止插件会终止其子进程。退出后由插件在下次启动时恢复自己的业务状态。
+- 停止插件会终止其子进程组。退出后由插件在下次启动时恢复自己的业务状态。
 
 ```lua
 local result, err = host.process.exec("sort", {}, {
+  cwd = host.dataDir,
+  env = { LC_ALL = "C" },
   stdin = "pear\napple\n",
   timeoutMs = 2000,
+  maxOutputBytes = 262144,
 })
 if result and result.exitCode == 0 then
   print(result.stdout)
@@ -207,9 +214,37 @@ end
 ```
 
 - `exec(program, args[, options])` 以宿主账号执行命令，逐项传入字符串参数。它会等命令退出，占用当前插件的 Lua goroutine。其他插件和宿主可继续运行。
-- `options.stdin` 为送入标准输入的字符串，省略时子进程读取到 EOF。`options.timeoutMs` 为正整数毫秒数，默认 30000。超时或停止插件会取消正在执行的命令。插件进入停止流程后，`exec` 返回启动失败，包括在停止钩子里发起的调用。
-- 结果表包含 `exitCode`、`stdout`、`stderr`、`stdoutTruncated`、`stderrTruncated` 和 `timedOut`。标准输出和标准错误各保留开头 64 KiB。命令以非零状态退出时仍返回结果表，因信号终止时 `exitCode` 为 `-1`。
+- `options.cwd` 设置工作目录；`options.env` 按与 `start` 相同的规则覆盖或移除环境变量；`options.stdin` 为送入标准输入的字符串，省略时子进程读取到 EOF；`options.timeoutMs` 为正整数毫秒数，默认 30000；`options.maxOutputBytes` 为每路输出上限字节数（`1` 到 `4194304`，默认 `65536`）。超时或停止插件会取消正在执行的命令进程组。插件进入停止流程后，`exec` 返回启动失败，包括在停止钩子里发起的调用。
+- 结果表包含 `exitCode`、`stdout`、`stderr`、`stdoutTruncated`、`stderrTruncated` 和 `timedOut`。命令以非零状态退出时仍返回结果表，因信号终止时 `exitCode` 为 `-1`。
 - 启动失败返回 `nil, error`，等待或读取输出失败时在结果表中提供 `error`。参数类型或取值无效时抛出 Lua 参数错误。
+
+```lua
+local handle, err = host.process.spawn("sh", {"-c", "echo line1; echo line2"}, {
+  cwd = host.dataDir,
+  timeoutMs = 10000,
+  onStdout = function(chunk) host.app.emit("log", { chunk = chunk }) end,
+  onStderr = function(chunk) host.app.emit("log", { stream = "stderr", chunk = chunk }) end,
+  onExit = function(result) print(result.pid, result.exitCode, result.stopped, result.timedOut) end,
+})
+-- handle:pid(), handle:running(), handle:stop([graceMs])
+```
+
+- `spawn(program, args[, options])` 启动可控的流式异步子进程，返回进程句柄（`pid()`、`running()`、`stop([graceMs])`）。
+- `options` 可选提供 `cwd`、`env`、`stdin`、`timeoutMs`、`onStdout`、`onStderr` 和 `onExit`。每路输出缓冲上限为 256 KiB，按 50ms / 16 KiB 合批交付，不阻塞子进程写管道；退出回调前会排空全部缓冲分块，结果表包含 `pid`、`exitCode`、`timedOut`、`stopped`、`stdoutDroppedBytes`、`stderrDroppedBytes` 和可选 `error`。
+- `handle:stop([graceMs])` 幂等终止进程组（默认先发 `SIGTERM`，`graceMs` 毫秒后升级 `SIGKILL`；`graceMs = 0` 立即强杀），不阻塞 Lua 主循环。停止插件会自动清理全部受管进程组。
+
+### `host.fs`
+
+```lua
+host.fs.mkdirAll(host.dataDir .. "/stacks/demo", "0700")
+host.fs.writeFile(host.dataDir .. "/stacks/demo/.env", "KEY=value\n", { mode = "0600", atomic = true })
+local info = host.fs.stat(host.dataDir .. "/stacks/demo/.env")
+local entries = host.fs.listDir(host.dataDir .. "/stacks/demo")
+host.fs.removeAll(host.dataDir .. "/stacks/demo")
+```
+
+- 提供 5 个轻量通用文件原语：`stat(path)`、`listDir(path)`、`mkdirAll(path[, mode])`、`removeAll(path)`、`writeFile(path, data[, options])`。
+- 遵循宿主账号系统权限；文件系统错误返回 `nil, err`，参数非法抛出 Lua 参数错误。`listDir` 空目录返回 JSON 数组表 `[]`；`writeFile` 默认 `atomic = true`（同目录临时文件原子替换），支持 `mode`（整数或八进制字符串）与 `mkdir`（自动建父目录）。
 
 ### `host.schedule`
 

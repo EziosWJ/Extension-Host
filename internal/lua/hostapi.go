@@ -51,6 +51,7 @@ func (r *Runtime) setup(L *glua.LState) error {
 	host.RawSetString("app", r.appModule(L))
 	host.RawSetString("storage", r.storageModule(L))
 	host.RawSetString("process", r.processModule(L))
+	host.RawSetString("fs", r.fsModule(L))
 	host.RawSetString("schedule", r.scheduleModule(L))
 	host.RawSetString("config", r.configModule(L))
 	host.RawSetString("json", r.jsonModule(L))
@@ -90,8 +91,8 @@ func (r *Runtime) appModule(L *glua.LState) *glua.LTable {
 	module.RawSetString("on", L.NewFunction(func(L *glua.LState) int {
 		event := L.CheckString(1)
 		handler := L.CheckFunction(2)
-		if event != "start" && event != "stop" {
-			L.RaiseError("host.app.on: unsupported lifecycle event %q (use start or stop)", event)
+		if event != "start" && event != "stop" && event != "subscribers" {
+			L.RaiseError("host.app.on: unsupported lifecycle event %q (use start, stop or subscribers)", event)
 			return 0
 		}
 		if _, exists := r.hooks[event]; exists {
@@ -100,6 +101,14 @@ func (r *Runtime) appModule(L *glua.LState) *glua.LTable {
 		}
 		r.hooks[event] = handler
 		return 0
+	}))
+	module.RawSetString("subscriberCount", L.NewFunction(func(L *glua.LState) int {
+		count := 0
+		if r.opts.SubscriberCount != nil {
+			count = r.opts.SubscriberCount()
+		}
+		L.Push(glua.LNumber(count))
+		return 1
 	}))
 	module.RawSetString("emit", L.NewFunction(func(L *glua.LState) int {
 		event := L.CheckString(1)

@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/user"
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"slices"
 	"strings"
 
 	glua "github.com/yuin/gopher-lua"
@@ -21,6 +24,7 @@ import (
 )
 
 var moduleNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$`)
+var routeParamNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (r *Runtime) setup(L *glua.LState) error {
 	glua.OpenBase(L)
@@ -55,11 +59,76 @@ func (r *Runtime) setup(L *glua.LState) error {
 	host.RawSetString("schedule", r.scheduleModule(L))
 	host.RawSetString("config", r.configModule(L))
 	host.RawSetString("json", r.jsonModule(L))
-	host.RawSetString("http", unavailableModule(L, "host.http", "request"))
+	host.RawSetString("http", r.httpModule(L))
+	host.RawSetString("user", userTable(L))
 	host.RawSetString("ws", unavailableModule(L, "host.ws", "subscribe"))
 	host.RawSetString("services", r.servicesModule(L))
 	L.SetGlobal("host", host)
 	return nil
+}
+
+func userTable(L *glua.LState) *glua.LTable {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		homeDir = ""
+	}
+	var username string
+	if current, err := user.Current(); err == nil {
+		username = current.Username
+	}
+
+	fields := L.NewTable()
+	fields.RawSetString("homeDir", glua.LString(homeDir))
+	fields.RawSetString("uid", glua.LNumber(os.Getuid()))
+	fields.RawSetString("gid", glua.LNumber(os.Getgid()))
+	fields.RawSetString("username", glua.LString(username))
+	fields.RawSetString("os", glua.LString(runtime.GOOS))
+	fields.RawSetString("arch", glua.LString(runtime.GOARCH))
+
+	table := L.NewTable()
+	metatable := L.NewTable()
+	metatable.RawSetString("__index", fields)
+	rejectWrite := func(L *glua.LState) int {
+		L.RaiseError("host.user is read-only")
+		return 0
+	}
+	metatable.RawSetString("__newindex", L.NewFunction(rejectWrite))
+	metatable.RawSetString("__metatable", glua.LFalse)
+	L.SetMetatable(table, metatable)
+
+	// Lua's raw table mutators bypass __newindex.
+	guard := func(owner *glua.LTable, name string) {
+		original := owner.RawGetString(name).(*glua.LFunction).GFunction
+		owner.RawSetString(name, L.NewFunction(func(L *glua.LState) int {
+			if L.Get(1) == table {
+				return rejectWrite(L)
+			}
+			return original(L)
+		}))
+	}
+	guard(L.Get(glua.GlobalsIndex).(*glua.LTable), "rawset")
+	tableLibrary := L.GetGlobal("table").(*glua.LTable)
+	for _, name := range []string{"insert", "remove", "sort"} {
+		guard(tableLibrary, name)
+	}
+
+	// module() can create a nested table through a raw write to its parent.
+	module := L.GetGlobal("module").(*glua.LFunction).GFunction
+	L.SetGlobal("module", L.NewFunction(func(L *glua.LState) int {
+		node := L.Get(glua.GlobalsIndex)
+		for name := range strings.SplitSeq(L.CheckString(1), ".") {
+			if node == table {
+				return rejectWrite(L)
+			}
+			parent, ok := node.(*glua.LTable)
+			if !ok {
+				break
+			}
+			node = parent.RawGetString(name)
+		}
+		return module(L)
+	}))
+	return table
 }
 
 func (r *Runtime) appModule(L *glua.LState) *glua.LTable {
@@ -74,6 +143,12 @@ func (r *Runtime) appModule(L *glua.LState) *glua.LTable {
 		}
 		if !validRoutePath(routePath) {
 			L.RaiseError("host.app.route: path %q must be a clean absolute path without a query", routePath)
+			return 0
+		}
+		if strings.ContainsAny(routePath, "{}") {
+			if err := r.registerParamRoute(method, routePath, handler); err != nil {
+				L.RaiseError("host.app.route: %v", err)
+			}
 			return 0
 		}
 		key := method + " " + routePath
@@ -269,6 +344,7 @@ func (r *Runtime) configModule(L *glua.LState) *glua.LTable {
 
 func (r *Runtime) jsonModule(L *glua.LState) *glua.LTable {
 	module := L.NewTable()
+	module.RawSetString("array", L.NewFunction(jsonArray))
 	module.RawSetString("encode", L.NewFunction(func(L *glua.LState) int {
 		value, err := toGo(L.Get(1))
 		if err != nil {
@@ -547,4 +623,48 @@ func validRoutePath(routePath string) bool {
 		return false
 	}
 	return path.Clean(routePath) == routePath
+}
+
+func (r *Runtime) registerParamRoute(method, routePath string, fn *glua.LFunction) error {
+	segments := strings.Split(routePath[1:], "/")
+	names := make([]string, len(segments))
+	seen := make(map[string]bool)
+	staticCount := len(segments)
+	for i, segment := range segments {
+		if !strings.ContainsAny(segment, "{}") {
+			continue
+		}
+		name, hasOpen := strings.CutPrefix(segment, "{")
+		name, hasClose := strings.CutSuffix(name, "}")
+		if !hasOpen || !hasClose {
+			return fmt.Errorf("path %q: parameter must occupy an entire path segment: %q", routePath, segment)
+		}
+		if !routeParamNamePattern.MatchString(name) {
+			return fmt.Errorf("path %q: invalid parameter name %q", routePath, name)
+		}
+		if seen[name] {
+			return fmt.Errorf("path %q: duplicate parameter name %q", routePath, name)
+		}
+		seen[name] = true
+		names[i] = name
+		segments[i] = "" // An empty segment represents a parameter in the pattern.
+		staticCount--
+	}
+
+	handler := paramRouteHandler{fn: fn, names: names}
+	for _, route := range r.paramRoutes {
+		if slices.Equal(route.segments, segments) {
+			if _, exists := route.handlers[method]; exists {
+				return fmt.Errorf("duplicate route %s %s", method, routePath)
+			}
+			route.handlers[method] = handler
+			return nil
+		}
+	}
+	r.paramRoutes = append(r.paramRoutes, paramRoute{
+		segments:    segments,
+		staticCount: staticCount,
+		handlers:    map[string]paramRouteHandler{method: handler},
+	})
+	return nil
 }

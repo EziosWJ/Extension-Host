@@ -25,6 +25,30 @@ func newArrayTable(L *glua.LState) *glua.LTable {
 	return table
 }
 
+func jsonArray(L *glua.LState) int {
+	array := newArrayTable(L)
+	if arg := L.Get(1); arg != glua.LNil {
+		source, ok := arg.(*glua.LTable)
+		if !ok {
+			L.ArgError(1, "expected a table")
+			return 0
+		}
+		count := 0
+		source.ForEach(func(_, _ glua.LValue) { count++ })
+		// If all count positions are present, there can be no holes or extra keys.
+		for index := 1; index <= count; index++ {
+			value := source.RawGet(glua.LNumber(index))
+			if value == glua.LNil {
+				L.ArgError(1, "expected a table with consecutive integer keys starting at 1")
+				return 0
+			}
+			array.RawSetInt(index, value)
+		}
+	}
+	L.Push(array)
+	return 1
+}
+
 func isArrayTable(table *glua.LTable) bool {
 	metatable, ok := table.Metatable.(*glua.LTable)
 	if !ok {

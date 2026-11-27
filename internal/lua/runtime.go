@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -28,7 +29,7 @@ var ErrExited = errors.New("plugin exited during startup")
 // Request is the request passed to a Lua HTTP handler.
 type Request struct {
 	Method     string
-	Path       string
+	Path       string // Decoded URL path relative to the plugin API mount.
 	Query      map[string]string
 	Headers    map[string]string
 	Body       []byte
@@ -87,12 +88,29 @@ type Runtime struct {
 
 	routes       map[string]*glua.LFunction
 	routeMethods map[string]map[string]bool
+	paramRoutes  []paramRoute
 	hooks        map[string]*glua.LFunction
 	modules      map[string]glua.LValue
 	loading      map[string]bool
 
 	exitRequested   bool
 	cancelExecution context.CancelFunc
+
+	requestEntry       *glua.LFunction
+	activeRequests     map[*glua.LState]*pendingHTTPRequest
+	asyncYieldSentinel glua.LValue
+	asyncCompletions   chan asyncCompletion
+}
+
+type paramRoute struct {
+	segments    []string
+	staticCount int
+	handlers    map[string]paramRouteHandler
+}
+
+type paramRouteHandler struct {
+	fn    *glua.LFunction
+	names []string
 }
 
 type commandKind int
@@ -104,9 +122,26 @@ const (
 
 type command struct {
 	kind commandKind
+	ctx  context.Context
 	req  Request
 	done chan result
 }
+
+type pendingHTTPRequest struct {
+	thread *glua.LState
+	ctx    context.Context
+	opCtx  context.Context
+	cancel context.CancelFunc
+	done   chan result
+	key    string
+}
+
+type asyncCompletion struct {
+	req    *pendingHTTPRequest
+	values luaResults
+}
+
+type luaResults func(*glua.LState) []glua.LValue
 
 type result struct {
 	response Response
@@ -140,6 +175,8 @@ func New(opts Options) *Runtime {
 		hooks:            make(map[string]*glua.LFunction),
 		modules:          make(map[string]glua.LValue),
 		loading:          make(map[string]bool),
+		activeRequests:   make(map[*glua.LState]*pendingHTTPRequest),
+		asyncCompletions: make(chan asyncCompletion),
 	}
 }
 
@@ -173,7 +210,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 func (r *Runtime) Handle(ctx context.Context, req Request) (Response, error) {
 	reply := make(chan result, 1)
 	select {
-	case r.cmds <- command{kind: commandHandle, req: req, done: reply}:
+	case r.cmds <- command{kind: commandHandle, ctx: ctx, req: req, done: reply}:
 	case <-r.ctx.Done():
 		return Response{}, ErrStopped
 	case <-ctx.Done():
@@ -248,6 +285,7 @@ func (r *Runtime) loop() {
 	}()
 	L := glua.NewState(glua.Options{SkipOpenLibs: true})
 	defer L.Close()
+	defer r.stopRequests()
 	execution, cancel := context.WithCancel(r.ctx)
 	defer cancel()
 	r.cancelExecution = cancel
@@ -255,11 +293,22 @@ func (r *Runtime) loop() {
 
 	r.scheduler = schedule.New(r.opts.Logger)
 
+	// Keep a Lua frame below the handler, even if it tail-calls a Go
+	// function. GopherLua treats a yield with an empty stack as a return.
+	entry, err := L.LoadString("local handler, request = ...; local response = handler(request); return response")
+	if err != nil {
+		r.ready <- err
+		return
+	}
+	r.requestEntry = entry
+	r.asyncYieldSentinel = L.NewUserData()
+
 	if err := r.setup(L); err != nil {
 		r.ready <- err
 		return
 	}
-	err := r.loadEntry(L)
+	r.guardRequestThreads(L)
+	err = r.loadEntry(L)
 	if err == nil {
 		if hookErr := r.callHook(L, "start"); hookErr != nil {
 			err = fmt.Errorf("start hook: %w", hookErr)
@@ -281,48 +330,34 @@ func (r *Runtime) loop() {
 			return
 		case exit := <-r.processExits:
 			r.reportProcessExit(L, exit)
-			if r.exitRequested {
-				r.stopAfterExit(L)
-				return
-			}
 		case <-r.spawnNotify:
 			r.handleSpawnEvent(L)
-			if r.exitRequested {
-				r.stopAfterExit(L)
-				return
-			}
 		case <-r.subscriberNotify:
 			r.handleSubscribersChange(L)
-			if r.exitRequested {
-				r.stopAfterExit(L)
-				return
-			}
 		case fire := <-r.scheduleFires:
 			r.handleScheduleFire(L, fire)
-			if r.exitRequested {
-				r.stopAfterExit(L)
-				return
-			}
+		case completion := <-r.asyncCompletions:
+			r.completeAsync(L, completion)
 		case cmd := <-r.cmds:
 			switch cmd.kind {
 			case commandHandle:
-				response, err := r.handle(L, cmd.req)
-				if r.exitRequested {
-					cmd.done <- result{err: ErrStopped}
-					r.stopAfterExit(L)
-					return
-				}
-				cmd.done <- result{response: response, err: err}
+				r.handle(L, cmd)
 			case commandStop:
+				r.stopRequests()
 				cmd.done <- result{err: r.stopHook(L)}
 				return
 			}
+		}
+		if r.exitRequested {
+			r.stopAfterExit(L)
+			return
 		}
 	}
 }
 
 func (r *Runtime) stopAfterExit(L *glua.LState) {
 	r.cancelExec()
+	r.stopRequests()
 	execution, cancel := context.WithCancel(r.ctx)
 	defer cancel()
 	r.cancelExecution = cancel
@@ -378,30 +413,244 @@ func (r *Runtime) handleSubscribersChange(L *glua.LState) {
 	}
 }
 
-func (r *Runtime) handle(L *glua.LState, req Request) (Response, error) {
+func (r *Runtime) handle(L *glua.LState, cmd command) {
+	if err := cmd.ctx.Err(); err != nil {
+		cmd.done <- result{err: err}
+		return
+	}
+	req := cmd.req
 	key := req.Method + " " + req.Path
 	fn := r.routes[key]
+	pathMatched := len(r.routeMethods[req.Path]) > 0
+	var params map[string]string
+	if !pathMatched && len(r.paramRoutes) > 0 {
+		fn, params, pathMatched = r.matchParamRoute(req.Method, req.Path)
+	}
 	if fn == nil {
-		if methods := r.routeMethods[req.Path]; len(methods) > 0 {
-			return errorResponse(405, fmt.Sprintf("method %s is not allowed for %s", req.Method, req.Path)), nil
+		if pathMatched {
+			cmd.done <- result{response: errorResponse(405, fmt.Sprintf("method %s is not allowed for %s", req.Method, req.Path))}
+		} else {
+			cmd.done <- result{response: errorResponse(404, fmt.Sprintf("no handler for %s %s", req.Method, req.Path))}
 		}
-		return errorResponse(404, fmt.Sprintf("no handler for %s %s", req.Method, req.Path)), nil
+		return
 	}
-	requestTable := r.requestTable(L, req)
-	if err := L.CallByParam(glua.P{Fn: fn, NRet: 1, Protect: true}, requestTable); err != nil {
-		return Response{}, fmt.Errorf("lua handler %s: %w", key, err)
+	thread, cancelThread := L.NewThread()
+	cancelThread()
+	thread.SetContext(L.Context())
+	opCtx, cancelOp := context.WithCancel(r.execCtx)
+	stopCancel := context.AfterFunc(cmd.ctx, cancelOp)
+	pending := &pendingHTTPRequest{
+		thread: thread,
+		ctx:    cmd.ctx,
+		opCtx:  opCtx,
+		cancel: func() {
+			stopCancel()
+			cancelOp()
+		},
+		done: cmd.done,
+		key:  key,
 	}
-	value := L.Get(-1)
-	L.Pop(1)
-	return r.parseResponse(L, value)
+	r.activeRequests[thread] = pending
+	r.resumeRequest(L, pending, r.requestEntry, fn, r.requestTable(L, req, params))
 }
 
-func (r *Runtime) requestTable(L *glua.LState, req Request) *glua.LTable {
+func (r *Runtime) matchParamRoute(method, routePath string) (*glua.LFunction, map[string]string, bool) {
+	path, absolute := strings.CutPrefix(routePath, "/")
+	if !absolute {
+		return nil, nil, false
+	}
+	segments := strings.Split(path, "/")
+	var best *paramRoute
+	for i := range r.paramRoutes {
+		route := &r.paramRoutes[i]
+		if route.matches(segments) && (best == nil || route.moreSpecificThan(best)) {
+			best = route
+		}
+	}
+	if best == nil {
+		return nil, nil, false
+	}
+	handler, ok := best.handlers[method]
+	if !ok {
+		return nil, nil, true
+	}
+	params := make(map[string]string, len(segments)-best.staticCount)
+	for i, name := range handler.names {
+		if name != "" {
+			params[name] = segments[i]
+		}
+	}
+	return handler.fn, params, true
+}
+
+func (route *paramRoute) matches(segments []string) bool {
+	if len(segments) != len(route.segments) {
+		return false
+	}
+	for i, literal := range route.segments {
+		if segments[i] == "" || (literal != "" && literal != segments[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (route *paramRoute) moreSpecificThan(other *paramRoute) bool {
+	if route.staticCount != other.staticCount {
+		return route.staticCount > other.staticCount
+	}
+	for i, literal := range route.segments {
+		if (literal == "") != (other.segments[i] == "") {
+			return literal != ""
+		}
+	}
+	return false
+}
+
+func (r *Runtime) resumeRequest(L *glua.LState, req *pendingHTTPRequest, fn *glua.LFunction, args ...glua.LValue) {
+	state, err, values := L.Resume(req.thread, fn, args...)
+	if r.exitRequested {
+		return
+	}
+	switch state {
+	case glua.ResumeOK:
+		response, err := r.parseResponse(L, values[0])
+		r.finishRequest(req, result{response: response, err: err})
+	case glua.ResumeError:
+		r.finishRequest(req, result{err: fmt.Errorf("lua handler %s: %w", req.key, err)})
+	case glua.ResumeYield:
+		if len(values) == 0 || values[0] != r.asyncYieldSentinel {
+			r.finishRequest(req, result{err: fmt.Errorf("lua handler %s: unexpected coroutine yield", req.key)})
+		}
+	}
+}
+
+func (r *Runtime) finishRequest(req *pendingHTTPRequest, res result) {
+	delete(r.activeRequests, req.thread)
+	req.thread.Dead = true
+	req.cancel()
+	req.done <- res
+}
+
+func (r *Runtime) stopRequests() {
+	for _, req := range r.activeRequests {
+		r.finishRequest(req, result{err: ErrStopped})
+	}
+}
+
+func (r *Runtime) guardRequestThreads(L *glua.LState) {
+	coroutine := L.GetGlobal("coroutine").(*glua.LTable)
+	resume := coroutine.RawGetString("resume").(*glua.LFunction)
+	coroutine.RawSetString("resume", L.NewFunction(func(L *glua.LState) int {
+		// A handler can share coroutine.running() with other Lua code.
+		// Only the runtime can resume it with the pending operation's results.
+		if thread, ok := L.Get(1).(*glua.LState); ok && r.activeRequests[thread] != nil {
+			L.Push(glua.LFalse)
+			L.Push(glua.LString("cannot resume an HTTP handler coroutine"))
+			return 2
+		}
+		return resume.GFunction(L)
+	}))
+}
+
+func (r *Runtime) canYieldRequest(L *glua.LState) (*pendingHTTPRequest, bool) {
+	req := r.activeRequests[L]
+	if req == nil || L.Parent == nil {
+		return nil, false
+	}
+	// Yielding through a Go call such as pcall leaves its Lua stack unwound
+	// while its Go code still expects the call to return normally.
+	for level := 1; ; level++ {
+		dbg, ok := L.GetStack(level)
+		if !ok {
+			break
+		}
+		if _, err := L.GetInfo("S", dbg, nil); err != nil || dbg.What == "G" {
+			return nil, false
+		}
+	}
+	if !canYieldThroughVM() {
+		return nil, false
+	}
+	return req, true
+}
+
+func canYieldThroughVM() bool {
+	// GopherLua's synchronous calls into Lua (including metamethods and
+	// generic for iterators) can enter callR without adding a Go Lua frame.
+	// A yield from there returns to callR instead of unwinding to Resume.
+	const state = "github.com/yuin/gopher-lua.(*LState)."
+	var stack [32]uintptr
+	n := runtime.Callers(2, stack[:])
+	frames := runtime.CallersFrames(stack[:n])
+	for {
+		frame, more := frames.Next()
+		switch frame.Function {
+		case state + "callR":
+			return false
+		case state + "Resume":
+			return true
+		}
+		if !more {
+			return false
+		}
+	}
+}
+
+func (r *Runtime) operationContext(L *glua.LState) context.Context {
+	if req := r.activeRequests[L]; req != nil {
+		return req.opCtx
+	}
+	return r.execCtx
+}
+
+func (r *Runtime) startAsync(req *pendingHTTPRequest, work func() luaResults) {
+	r.processes.Add(1)
+	go func() {
+		defer r.processes.Done()
+		values := work()
+		select {
+		case r.asyncCompletions <- asyncCompletion{req: req, values: values}:
+		case <-r.ctx.Done():
+		}
+	}()
+}
+
+func (r *Runtime) completeAsync(L *glua.LState, completion asyncCompletion) {
+	req := completion.req
+	if r.activeRequests[req.thread] != req {
+		return
+	}
+	if err := req.ctx.Err(); err != nil {
+		r.finishRequest(req, result{err: err})
+		return
+	}
+	if r.execCtx.Err() != nil {
+		r.finishRequest(req, result{err: ErrStopped})
+		return
+	}
+	r.resumeRequest(L, req, nil, completion.values(L)...)
+}
+
+func pushResults(L *glua.LState, values []glua.LValue) int {
+	for _, value := range values {
+		L.Push(value)
+	}
+	return len(values)
+}
+
+func (r *Runtime) requestTable(L *glua.LState, req Request, params map[string]string) *glua.LTable {
 	table := L.NewTable()
 	table.RawSetString("method", glua.LString(req.Method))
 	table.RawSetString("path", glua.LString(req.Path))
 	table.RawSetString("body", glua.LString(string(req.Body)))
 	table.RawSetString("remoteAddr", glua.LString(req.RemoteAddr))
+
+	paramTable := L.NewTable()
+	for name, value := range params {
+		paramTable.RawSetString(name, glua.LString(value))
+	}
+	table.RawSetString("params", paramTable)
 
 	query := L.NewTable()
 	for name, value := range req.Query {

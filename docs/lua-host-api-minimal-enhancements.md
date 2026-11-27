@@ -126,3 +126,15 @@ local handle, err = host.process.spawn(program, args[, options])
 2. **Subagent 2（事件与订阅）**：实现 P1-1 的 `internal/lifecycle/instance.go` 扩展（`eventBuffer = 128`、`SubscriberCount`、无锁死通知）及单元测试 `internal/lifecycle/instance_test.go`。
 3. **Subagent 3（通用文件系统）**：实现 P1-2 的 `internal/lua/fs.go` 及单元测试 `internal/lua/fs_test.go`。
 4. **主协调器集成与验收**：完成 `internal/lua/hostapi.go` 与 `internal/lua/runtime.go` 的统一接线，补充端到端集成测试 `host/lua_events_test.go` 与 `host/lua_fs_test.go`，更新 `README.md`，最终执行 `make check`（`go vet`、`go test ./...`、`go build`、`gofmt`）全部通过。
+
+## v0.3.x 增量能力
+
+- `host.http.request(options)` 发起 HTTP 或 HTTPS 请求，支持请求头、请求体、超时、重定向和 TLS 验证设置。返回 `status`、`headers`、`body`、`bodyTruncated` 和 `latencyMs`。响应体默认限制为 1 MiB，最高 8 MiB，超限返回截断内容并设置标记。
+- `host.fs.readFile(path[, options])` 读取文本或二进制文件。`maxBytes` 默认 1 MiB，最高 8 MiB，超限返回 `nil, err`。
+- `host.json.array([table])` 构造 JSON 数组表。空数组编码为 `[]`。
+- `host.process.lookPath(name)` 查找可执行文件并返回绝对路径。`host.user` 只读地提供宿主进程的 `os`、`arch`、`uid`、`gid`、`homeDir` 和 `username`。
+- `host.app.route` 支持整段路径参数 `{param}`，通过 `request.params` 读取解码后的值，精确路径优先。
+- HTTP 处理器在可挂起的调用位置执行 `host.process.exec` 或 `host.http.request` 时，等待期间让出当前协程，其他请求和回调可继续串行执行 Lua 代码。生命周期钩子、其他回调和无法挂起的调用位置同步等待。
+- `ext logs [plugin-id]` 查看插件日志，支持 `--data-dir`、`-n` / `--lines` 和 `-f` / `--follow`。
+
+新增能力沿用 Host API 版本 1。完整参数与示例见 [README](../README.md#lua-运行时)。

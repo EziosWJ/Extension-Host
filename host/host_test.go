@@ -395,7 +395,7 @@ func TestUnauthorizedHostAPIIsExplicit(t *testing.T) {
 	}`
 	lua := `
 host.app.route("GET", "/call", function()
-  host.http.request("GET", "http://127.0.0.1/")
+  host.ws.subscribe("ws://127.0.0.1/")
   return { status = 200, body = "unreachable" }
 end)
 `
@@ -407,7 +407,7 @@ end)
 	if status != http.StatusInternalServerError {
 		t.Fatalf("status = %d, %q", status, body)
 	}
-	if !strings.Contains(body, "host.http.request is not implemented") {
+	if !strings.Contains(body, "host.ws.subscribe is not implemented") {
 		t.Fatalf("error = %q", body)
 	}
 }

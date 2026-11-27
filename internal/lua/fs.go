@@ -2,6 +2,7 @@ package lua
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ func (r *Runtime) fsModule(L *glua.LState) *glua.LTable {
 	module.RawSetString("listDir", L.NewFunction(fsListDir))
 	module.RawSetString("mkdirAll", L.NewFunction(fsMkdirAll))
 	module.RawSetString("removeAll", L.NewFunction(fsRemoveAll))
+	module.RawSetString("readFile", L.NewFunction(fsReadFile))
 	module.RawSetString("writeFile", L.NewFunction(fsWriteFile))
 	return module
 }
@@ -100,6 +102,44 @@ func fsRemoveAll(L *glua.LState) int {
 		return pushFSError(L, err)
 	}
 	L.Push(glua.LTrue)
+	return 1
+}
+
+func fsReadFile(L *glua.LState) int {
+	path := checkFSPath(L, 1)
+
+	maxBytes := 1 << 20
+	if value := L.Get(2); value != glua.LNil {
+		options, ok := value.(*glua.LTable)
+		if !ok {
+			L.ArgError(2, "options must be a table")
+			return 0
+		}
+		if value := options.RawGetString("maxBytes"); value != glua.LNil {
+			limit, ok := value.(glua.LNumber)
+			if !ok || limit < 1 || limit > 8<<20 || math.Trunc(float64(limit)) != float64(limit) {
+				L.ArgError(2, "maxBytes must be an integer between 1 and 8388608")
+				return 0
+			}
+			maxBytes = int(limit)
+		}
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return pushFSError(L, err)
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(io.LimitReader(file, int64(maxBytes)+1))
+	if err != nil {
+		return pushFSError(L, err)
+	}
+	if len(data) > maxBytes {
+		return pushFSError(L, fmt.Errorf("file exceeds maxBytes (%d)", maxBytes))
+	}
+
+	L.Push(glua.LString(data))
 	return 1
 }
 

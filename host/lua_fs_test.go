@@ -39,6 +39,11 @@ func TestLuaFSModuleEndToEnd(t *testing.T) {
 				mode = "0600",
 			}))
 
+			local envContents = assert(host.fs.readFile(stackDir .. "/.env"))
+			local limited, limitErr = host.fs.readFile(stackDir .. "/.env", { maxBytes = 4 })
+			assert(limited == nil and type(limitErr) == "string", "expected readFile limit error")
+			assert(string.find(limitErr, "maxBytes", 1, true), limitErr)
+
 			local envStat = assert(host.fs.stat(stackDir .. "/.env"))
 			assert(envStat.isFile and not envStat.isDir and envStat.mode == "0600")
 			assert(envStat.size == #"SECRET=top-secret\n")
@@ -61,6 +66,7 @@ func TestLuaFSModuleEndToEnd(t *testing.T) {
 				body = host.json.encode({
 					names = names,
 					envMode = envStat.mode,
+					envContents = envContents,
 				}),
 			}
 		end)
@@ -77,14 +83,18 @@ func TestLuaFSModuleEndToEnd(t *testing.T) {
 	}
 
 	var payload struct {
-		Names   []string `json:"names"`
-		EnvMode string   `json:"envMode"`
+		Names       []string `json:"names"`
+		EnvMode     string   `json:"envMode"`
+		EnvContents string   `json:"envContents"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	if payload.EnvMode != "0600" {
 		t.Fatalf("envMode = %q, want 0600", payload.EnvMode)
+	}
+	if payload.EnvContents != "SECRET=top-secret\n" {
+		t.Fatalf("readFile contents = %q, want %q", payload.EnvContents, "SECRET=top-secret\n")
 	}
 	if len(payload.Names) != 2 || payload.Names[0] != ".env" || payload.Names[1] != "compose.yaml" {
 		t.Fatalf("names = %v, want [.env compose.yaml]", payload.Names)

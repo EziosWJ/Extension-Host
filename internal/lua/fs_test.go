@@ -364,6 +364,87 @@ func TestFSMkdirAll(t *testing.T) {
 	})
 }
 
+func TestFSReadFile(t *testing.T) {
+	L := newTestFSState(t)
+	dir := t.TempDir()
+	textPath := filepath.Join(dir, "sample.txt")
+	binaryPath := filepath.Join(dir, "sample.bin")
+	const textContent = "hello world\n"
+	const binaryContent = "\x00\xff\x80\n"
+	if err := os.WriteFile(textPath, []byte(textContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binaryPath, []byte(binaryContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name, path, options, want string
+	}{
+		{"text", textPath, ``, textContent},
+		{"binary with nil options", binaryPath, `, nil`, binaryContent},
+		{"empty options table", textPath, `, {}`, textContent},
+		{"exact limit", binaryPath, `, {maxBytes = 4}`, binaryContent},
+		{"maximum allowed limit", textPath, `, {maxBytes = 8388608}`, textContent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			L.SetGlobal("target", glua.LString(tc.path))
+			if err := L.DoString(`data, err = host.fs.readFile(target` + tc.options + `)`); err != nil {
+				t.Fatal(err)
+			}
+			if data, err := L.GetGlobal("data"), L.GetGlobal("err"); data != glua.LString(tc.want) || err != glua.LNil {
+				t.Fatalf("got data=%q err=%v, want %q and nil", data, err, tc.want)
+			}
+		})
+	}
+
+	largePath := filepath.Join(dir, "large.bin")
+	if err := os.WriteFile(largePath, make([]byte, (1<<20)+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, path, options, wantError string
+	}{
+		{"over explicit limit", binaryPath, `, {maxBytes = 3}`, "file exceeds maxBytes (3)"},
+		{"over default limit", largePath, ``, "file exceeds maxBytes (1048576)"},
+		{"missing file", filepath.Join(dir, "missing"), ``, ""},
+		{"directory", dir, ``, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			L.SetGlobal("target", glua.LString(tc.path))
+			if err := L.DoString(`data, err = host.fs.readFile(target` + tc.options + `)`); err != nil {
+				t.Fatal(err)
+			}
+			if data := L.GetGlobal("data"); data != glua.LNil {
+				t.Fatalf("data is %T, want nil", data)
+			}
+			if err, ok := L.GetGlobal("err").(glua.LString); !ok || err == "" || (tc.wantError != "" && string(err) != tc.wantError) {
+				t.Fatalf("unexpected read error: %v", L.GetGlobal("err"))
+			}
+		})
+	}
+
+	t.Run("invalid arguments", func(t *testing.T) {
+		L.SetGlobal("target", glua.LString(textPath))
+		for _, tc := range []struct {
+			args, wantError string
+		}{
+			{`""`, "bad argument #1"},
+			{`"bad\0path"`, "bad argument #1"},
+			{`123`, "bad argument #1"},
+			{`target, false`, "bad argument #2"},
+			{`target, {maxBytes = 0}`, "bad argument #2"},
+			{`target, {maxBytes = 8388609}`, "bad argument #2"},
+			{`target, {maxBytes = 1.5}`, "bad argument #2"},
+			{`target, {maxBytes = "4"}`, "bad argument #2"},
+		} {
+			if err := L.DoString(`host.fs.readFile(` + tc.args + `)`); err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Errorf("readFile(%s) error = %v, want %q", tc.args, err, tc.wantError)
+			}
+		}
+	})
+}
+
 func TestFSWriteFile(t *testing.T) {
 	L := newTestFSState(t)
 	dir := t.TempDir()

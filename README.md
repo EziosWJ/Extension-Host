@@ -23,7 +23,8 @@ GoDesk 的插件宿主。仓库提供公共 Go 模块、独立命令 `ext`、最
 - 无效包、缺失入口、不兼容 Host API 和失败的服务调用返回明确错误。
 - `host.services` 通过共享的 `hostsys/services` 后端提供 `list`、`get`、`start`、`stop`、`restart`、`logs`。操作受宿主账号的系统权限约束。
 - 插件可通过 `host.schedule` 按 cron 表达式或 `@every` 注册定时任务，回调在插件实例的 Lua goroutine 上串行执行。
-- `host.http`、`host.ws` 尚未实现，调用会返回“尚未实现”错误。
+- `host.http.request` 支持插件后端发起 HTTP 和 HTTPS 请求。
+- `host.ws` 尚未实现，调用会返回“尚未实现”错误。
 
 ## 构建
 
@@ -101,8 +102,16 @@ ZIP 位于 `dist/<插件标识>-<版本>.zip`，内容来自项目根目录的 `
 | `ext init` | 选择模板，并在当前目录下创建以插件名称命名的项目文件夹。 |
 | `ext dev` | 自动安装并启用当前目录的插件，保存文件后更新。支持 `--listen`。 |
 | `ext pkg` | 校验当前项目并把运行文件打包到 `dist/<id>-<version>.zip`。 |
+| `ext logs [plugin-id]` | 查看插件日志。支持 `--data-dir <dir>`、`-n` / `--lines <N>`（默认 100 行，`0` 显示全部）和 `-f` / `--follow`（持续显示新增日志，按 Ctrl+C 退出）。 |
 
 参数可以放在位置参数前后。`serve` 和 `run` 默认使用 `./ext-data`，`dev` 使用项目的 `.ext/`。
+
+`ext logs` 从数据目录的 `logs/` 读取。当前目录有 `manifest.json` 和 `.ext/logs/` 时默认使用 `.ext/`，其余情况默认使用 `./ext-data`。省略插件 ID 时优先使用当前目录 Manifest 中的 ID，其次读取唯一的日志文件。有多个日志文件且无法推断插件 ID 时须显式指定。
+
+```sh
+ext logs -f
+ext logs com.godesk.hello --data-dir ./ext-data --lines 50
+```
 
 ## 插件包
 
@@ -150,16 +159,16 @@ lua/proxies.lua
 
 ## Lua 运行时
 
-每个运行实例拥有独立的 GopherLua `LState` 和一个专属 goroutine。所有 HTTP 处理、生命周期钩子和存储调用都串行执行。停止插件会取消当前 Lua 执行并释放订阅。
+每个运行实例拥有独立的 GopherLua `LState` 和一个专属 goroutine。Lua 代码在该 goroutine 上串行执行。HTTP 处理器在可挂起的调用位置使用 `host.process.exec` 或 `host.http.request` 时，等待期间会挂起当前 HTTP 协程，其他请求和回调可以继续运行。操作完成后处理器从调用处恢复。生命周期钩子、其他回调以及 `pcall` 等无法挂起的调用位置会同步等待。停止插件会取消当前 Lua 执行并释放订阅。
 
 ### `host.app`
 
 ```lua
-host.app.route("GET", "/hello", function(request)
+host.app.route("GET", "/hello/{name}", function(request)
   return {
     status = 200,
     headers = { ["content-type"] = "application/json; charset=utf-8" },
-    body = host.json.encode({ ok = true }),
+    body = host.json.encode({ name = request.params.name }),
   }
 end)
 
@@ -170,7 +179,7 @@ host.app.emit("visit", { count = 3 })
 local activeClients = host.app.subscriberCount()
 ```
 
-- `route(method, path, handler)`：路由相对于 `/extensions/{id}/api/`，按方法和精确路径匹配。重复路由、无效方法或路径会在加载时失败。
+- `route(method, path, handler)` 注册相对于 `/extensions/{id}/api/` 的路由。路径参数 `{param}` 占据一整个非空路径段，例如 `/hello/{name}`。精确路径优先于参数路由。重复路由、无效方法或路径会在加载时失败。
 - `on(event, handler)`：支持 `start`、`stop` 和 `subscribers`（浏览器 WebSocket 订阅数变化时在 Lua 主循环串行回调最新数量）。
 - `emit(event, data)`：向当前插件的所有浏览器订阅发送 `{"event": ..., "data": ...}`。没有订阅者时丢弃。
 - `subscriberCount()`：返回当前插件活跃的浏览器 WebSocket 订阅数量。
@@ -181,6 +190,7 @@ local activeClients = host.app.subscriberCount()
 | --- | --- |
 | `method` | 大写 HTTP 方法。 |
 | `path` | API 前缀之后的路径，以 `/` 开头。 |
+| `params` | 路径参数表，键为参数名，值为 URL 解码后的字符串。精确路径对应空表。 |
 | `query` | 查询参数表，每个键取第一个值。 |
 | `headers` | 请求头表，键为小写。 |
 | `body` | 请求体字符串。 |
@@ -213,10 +223,11 @@ if result and result.exitCode == 0 then
 end
 ```
 
-- `exec(program, args[, options])` 以宿主账号执行命令，逐项传入字符串参数。它会等命令退出，占用当前插件的 Lua goroutine。其他插件和宿主可继续运行。
+- `exec(program, args[, options])` 以宿主账号执行命令，逐项传入字符串参数，等待命令退出后返回。在可挂起的 HTTP 处理器中，等待期间同一插件可以处理其他请求和回调。
 - `options.cwd` 设置工作目录；`options.env` 按与 `start` 相同的规则覆盖或移除环境变量；`options.stdin` 为送入标准输入的字符串，省略时子进程读取到 EOF；`options.timeoutMs` 为正整数毫秒数，默认 30000；`options.maxOutputBytes` 为每路输出上限字节数（`1` 到 `4194304`，默认 `65536`）。超时或停止插件会取消正在执行的命令进程组。插件进入停止流程后，`exec` 返回启动失败，包括在停止钩子里发起的调用。
 - 结果表包含 `exitCode`、`stdout`、`stderr`、`stdoutTruncated`、`stderrTruncated` 和 `timedOut`。命令以非零状态退出时仍返回结果表，因信号终止时 `exitCode` 为 `-1`。
 - 启动失败返回 `nil, error`，等待或读取输出失败时在结果表中提供 `error`。参数类型或取值无效时抛出 Lua 参数错误。
+- `lookPath(name)` 按宿主进程的可执行文件查找规则解析命令，例如 `host.process.lookPath("sh")`。找到时返回绝对路径，查找失败返回 `nil, error`。
 
 ```lua
 local handle, err = host.process.spawn("sh", {"-c", "echo line1; echo line2"}, {
@@ -239,12 +250,31 @@ local handle, err = host.process.spawn("sh", {"-c", "echo line1; echo line2"}, {
 host.fs.mkdirAll(host.dataDir .. "/stacks/demo", "0700")
 host.fs.writeFile(host.dataDir .. "/stacks/demo/.env", "KEY=value\n", { mode = "0600", atomic = true })
 local info = host.fs.stat(host.dataDir .. "/stacks/demo/.env")
+local contents = assert(host.fs.readFile(host.dataDir .. "/stacks/demo/.env", { maxBytes = 4096 }))
 local entries = host.fs.listDir(host.dataDir .. "/stacks/demo")
 host.fs.removeAll(host.dataDir .. "/stacks/demo")
 ```
 
-- 提供 5 个轻量通用文件原语：`stat(path)`、`listDir(path)`、`mkdirAll(path[, mode])`、`removeAll(path)`、`writeFile(path, data[, options])`。
+- 提供 `stat(path)`、`listDir(path)`、`mkdirAll(path[, mode])`、`removeAll(path)`、`writeFile(path, data[, options])` 和 `readFile(path[, options])`。
 - 遵循宿主账号系统权限；文件系统错误返回 `nil, err`，参数非法抛出 Lua 参数错误。`listDir` 空目录返回 JSON 数组表 `[]`；`writeFile` 默认 `atomic = true`（同目录临时文件原子替换），支持 `mode`（整数或八进制字符串）与 `mkdir`（自动建父目录）。
+- `readFile` 将完整内容作为 Lua 字符串返回，支持二进制文件。`options.maxBytes` 默认为 1 MiB，允许 1 字节至 8 MiB 的整数。超限返回 `nil, err`。
+
+### `host.http`
+
+```lua
+local response, err = host.http.request({
+  url = "https://example.com/api",
+  method = "POST",
+  headers = { ["content-type"] = "application/json" },
+  body = host.json.encode({ name = "demo" }),
+  timeoutMs = 3000,
+})
+```
+
+- `request(options)` 要求绝对 HTTP 或 HTTPS `url`。`method` 默认 `GET`，`headers` 的键和值为字符串，`body` 为可选字符串。默认跟随重定向，可设置 `followRedirects = false`。默认验证 TLS 证书，可设置 `insecureSkipVerify = true` 跳过验证。
+- `timeoutMs` 默认为 15000，允许 1 至 120000 的整数。`maxResponseBytes` 默认为 1 MiB，允许 1 字节至 8 MiB 的整数。
+- 返回表包含 `status`（HTTP 状态码）、`headers`（小写键，同名值以逗号和空格连接）、`body`（响应内容）、`bodyTruncated`（是否超限截断）和 `latencyMs`（请求至响应体读取完成的耗时，单位为毫秒）。HTTP 错误状态也返回响应表。网络或超时错误返回 `nil, err`，非法参数抛出 Lua 参数错误。
+- 在可挂起的 HTTP 处理器中，等待出站请求期间同一插件可以处理其他请求和回调。
 
 ### `host.schedule`
 
@@ -292,9 +322,13 @@ local all = host.config.all()
 
 local payload = host.json.decode(request.body)
 local text = host.json.encode(payload)
+local items = host.json.array()
+local emptyJSON = host.json.encode(items)  -- "[]"
 ```
 
 配置值来自管理页保存的配置与 Manifest 默认值。插件后端可以读取 `secret` 字段的原始值；管理 API 和宿主日志不会输出这些值。
+
+`host.json.array([table])` 创建可编码为 JSON 数组的 Lua 表。省略参数时创建空数组，传入表时复制从 1 开始且连续的整数键对应的元素。
 
 ### 其他字段与模块
 
@@ -302,7 +336,7 @@ local text = host.json.encode(payload)
 | --- | --- |
 | `host.dataDir` | 当前插件的数据目录，用于放置自有文件。 |
 | `host.apiVersion` | 当前宿主 API 版本，值为 `1`。 |
-| `host.http.request` | 尚未实现，调用返回 `host.http.request is not implemented`。 |
+| `host.user` | 只读的宿主进程环境信息，包含 `os`、`arch`、`uid`、`gid`、`homeDir` 和 `username`。无法获取主目录或用户名时对应字段为空字符串。 |
 | `host.ws.subscribe` | 尚未实现，调用返回 `host.ws.subscribe is not implemented`。 |
 | `host.services.list/get/start/stop/restart/logs` | 访问 systemd 服务。详见 [systemd 服务](#systemd-服务)。 |
 | `host.schedule.register/unregister` | 注册和移除实例内的定时任务；详见上文 `host.schedule` 一节。 |

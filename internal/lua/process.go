@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -57,7 +58,28 @@ func (r *Runtime) processModule(L *glua.LState) *glua.LTable {
 	}))
 	module.RawSetString("exec", L.NewFunction(r.execProcess))
 	module.RawSetString("spawn", L.NewFunction(r.spawnProcess))
+	module.RawSetString("lookPath", L.NewFunction(lookPath))
 	return module
+}
+
+func lookPath(L *glua.LState) int {
+	name, ok := L.Get(1).(glua.LString)
+	if !ok || name == "" || strings.ContainsRune(string(name), 0) {
+		L.ArgError(1, "name must be a non-empty string without NUL bytes")
+		return 0
+	}
+
+	path, err := exec.LookPath(string(name))
+	if err == nil {
+		path, err = filepath.Abs(path)
+	}
+	if err != nil {
+		L.Push(glua.LNil)
+		L.Push(glua.LString(err.Error()))
+		return 2
+	}
+	L.Push(glua.LString(path))
+	return 1
 }
 
 func processArguments(L *glua.LState, arguments *glua.LTable) []string {
@@ -142,8 +164,13 @@ func (r *Runtime) execProcess(L *glua.LState) int {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(r.execCtx, timeout)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(r.operationContext(L), timeout)
+	background := false
+	defer func() {
+		if !background {
+			cancel()
+		}
+	}()
 	cmd := exec.CommandContext(ctx, program, args...)
 	configureExecCancellation(cmd)
 	if cwd != "" {
@@ -159,28 +186,42 @@ func (r *Runtime) execProcess(L *glua.LState) int {
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}
-	if err := cmd.Start(); err != nil {
-		L.Push(glua.LNil)
-		L.Push(glua.LString(err.Error()))
-		return 2
+	if req, ok := r.canYieldRequest(L); ok {
+		background = true
+		r.startAsync(req, func() luaResults {
+			defer cancel()
+			return runExec(ctx, cmd, &stdout, &stderr)
+		})
+		return L.Yield(r.asyncYieldSentinel)
 	}
 	r.processes.Add(1)
 	defer r.processes.Done()
-	err := cmd.Wait()
+	return pushResults(L, runExec(ctx, cmd, &stdout, &stderr)(L))
+}
 
-	result := L.NewTable()
-	result.RawSetString("exitCode", glua.LNumber(cmd.ProcessState.ExitCode()))
-	result.RawSetString("stdout", glua.LString(stdout.text.String()))
-	result.RawSetString("stderr", glua.LString(stderr.text.String()))
-	result.RawSetString("stdoutTruncated", glua.LBool(stdout.truncated))
-	result.RawSetString("stderrTruncated", glua.LBool(stderr.truncated))
-	result.RawSetString("timedOut", glua.LBool(err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)))
-	var exitErr *exec.ExitError
-	if err != nil && !errors.As(err, &exitErr) {
-		result.RawSetString("error", glua.LString(err.Error()))
+func runExec(ctx context.Context, cmd *exec.Cmd, stdout, stderr *processOutput) luaResults {
+	if err := cmd.Start(); err != nil {
+		return func(*glua.LState) []glua.LValue {
+			return []glua.LValue{glua.LNil, glua.LString(err.Error())}
+		}
 	}
-	L.Push(result)
-	return 1
+	err := cmd.Wait()
+	timedOut := err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)
+
+	return func(L *glua.LState) []glua.LValue {
+		result := L.NewTable()
+		result.RawSetString("exitCode", glua.LNumber(cmd.ProcessState.ExitCode()))
+		result.RawSetString("stdout", glua.LString(stdout.text.String()))
+		result.RawSetString("stderr", glua.LString(stderr.text.String()))
+		result.RawSetString("stdoutTruncated", glua.LBool(stdout.truncated))
+		result.RawSetString("stderrTruncated", glua.LBool(stderr.truncated))
+		result.RawSetString("timedOut", glua.LBool(timedOut))
+		var exitErr *exec.ExitError
+		if err != nil && !errors.As(err, &exitErr) {
+			result.RawSetString("error", glua.LString(err.Error()))
+		}
+		return []glua.LValue{result}
+	}
 }
 
 func processEnvironment(L *glua.LState, argIndex int, inherited []string, changes *glua.LTable) []string {

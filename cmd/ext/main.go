@@ -56,6 +56,8 @@ func run(ctx context.Context, args []string) error {
 		return develop(ctx, args[1:])
 	case "pkg":
 		return packageProject(args[1:])
+	case "logs":
+		return showLogs(ctx, args[1:], ".", os.Stdout)
 	case "help":
 		usage(os.Stdout)
 		return nil
@@ -77,12 +79,18 @@ Usage:
   ext init                     Create a named plugin project folder
   ext dev [flags]              Run the current project and reload on save
   ext pkg                      Build the current project into dist/
+  ext logs [plugin-id] [flags]  Show plugin logs
 
 Serve, run and dev flags:
   --listen string          HTTP listen address (default "127.0.0.1:5001")
 
 Serve and run only:
   --data-dir string        host data directory (default "./ext-data")
+
+Logs flags:
+  --data-dir string        Host data directory (default ".ext" for a project with logs, otherwise "./ext-data")
+  -n, --lines N            Show the last N lines (default 100, 0 for all)
+  -f, --follow             Follow new log output until interrupted
 
 Examples:
   ext init

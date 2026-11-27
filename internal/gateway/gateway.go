@@ -23,6 +23,7 @@ import (
 	"github.com/EziosWJ/Extension-Host/internal/bundle"
 	"github.com/EziosWJ/Extension-Host/internal/lifecycle"
 	"github.com/EziosWJ/Extension-Host/internal/lua"
+	"github.com/EziosWJ/Extension-Host/internal/manifest"
 )
 
 const (
@@ -64,6 +65,8 @@ func New(manager *lifecycle.Manager, logger *slog.Logger, opts Options) http.Han
 	mux.HandleFunc("GET /api/v1/extensions", gateway.list)
 	mux.HandleFunc("POST /api/v1/extensions", gateway.install)
 	mux.HandleFunc("GET /api/v1/extensions/{id}", gateway.get)
+	mux.HandleFunc("GET /api/v1/extensions/{id}/logs", gateway.logs)
+	mux.HandleFunc("POST /api/v1/extensions/{id}/upgrade", gateway.upgrade)
 	mux.HandleFunc("POST /api/v1/extensions/{id}/enable", gateway.enable)
 	mux.HandleFunc("POST /api/v1/extensions/{id}/start", gateway.start)
 	mux.HandleFunc("POST /api/v1/extensions/{id}/stop", gateway.stop)
@@ -101,25 +104,45 @@ func (g *Gateway) get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) install(w http.ResponseWriter, r *http.Request) {
+	g.publishPackage(w, r, http.StatusCreated, g.manager.Install)
+}
+
+func (g *Gateway) upgrade(w http.ResponseWriter, r *http.Request) {
+	g.publishPackage(w, r, http.StatusOK, func(ctx context.Context, pkg *bundle.Bundle) (lifecycle.View, error) {
+		return g.manager.Upgrade(ctx, r.PathValue("id"), pkg)
+	})
+}
+
+func (g *Gateway) publishPackage(w http.ResponseWriter, r *http.Request, status int, publish func(context.Context, *bundle.Bundle) (lifecycle.View, error)) {
 	ctx, cancel := operationContext(r)
 	defer cancel()
 
 	data, err := readPackage(w, r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeCodedError(w, http.StatusBadRequest, "invalid_package", err.Error())
 		return
 	}
 	pkg, err := bundle.LoadZip(data)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("%v: %v", errInvalidPackage, err))
+	if errors.Is(err, manifest.ErrHostAPIIncompatible) {
+		g.fail(w, err)
 		return
 	}
-	view, err := g.manager.Install(ctx, pkg)
+	if err != nil {
+		writeCodedError(w, http.StatusBadRequest, "invalid_package", fmt.Sprintf("%v: %v", errInvalidPackage, err))
+		return
+	}
+	view, err := publish(ctx, pkg)
+	if errors.Is(err, lifecycle.ErrConflict) {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"code": "already_installed", "message": err.Error(), "error": err.Error(), "pluginId": pkg.Manifest.ID,
+		})
+		return
+	}
 	if err != nil {
 		g.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, view)
+	writeJSON(w, status, view)
 }
 
 func (g *Gateway) enable(w http.ResponseWriter, r *http.Request) {
@@ -390,21 +413,23 @@ func (g *Gateway) events(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) fail(w http.ResponseWriter, err error) {
-	status := http.StatusInternalServerError
+	status, code := http.StatusInternalServerError, "internal_error"
 	switch {
-	case errors.Is(err, lifecycle.ErrIncompatible):
-		status = http.StatusBadRequest
+	case errors.Is(err, lifecycle.ErrIncompatible), errors.Is(err, manifest.ErrHostAPIIncompatible):
+		status, code = http.StatusBadRequest, "incompatible_package"
+	case errors.Is(err, lifecycle.ErrIDMismatch):
+		status, code = http.StatusBadRequest, "id_mismatch"
 	case errors.Is(err, lifecycle.ErrNotFound), errors.Is(err, lifecycle.ErrNoLua), errors.Is(err, lifecycle.ErrNoWeb):
-		status = http.StatusNotFound
-	case errors.Is(err, lifecycle.ErrConflict), errors.Is(err, lifecycle.ErrNotEnabled), errors.Is(err, lifecycle.ErrNotRunning), errors.Is(err, lua.ErrStopped):
-		status = http.StatusConflict
+		status, code = http.StatusNotFound, "not_found"
+	case errors.Is(err, lifecycle.ErrNotEnabled), errors.Is(err, lifecycle.ErrNotRunning), errors.Is(err, lua.ErrStopped):
+		status, code = http.StatusConflict, "conflict"
 	case errors.Is(err, lifecycle.ErrClosed):
-		status = http.StatusServiceUnavailable
+		status, code = http.StatusServiceUnavailable, "host_closed"
 	}
 	if status >= 500 {
 		g.logger.Error("extension request failed", "error", err)
 	}
-	writeError(w, status, err.Error())
+	writeCodedError(w, status, code, err.Error())
 }
 
 func readPackage(w http.ResponseWriter, r *http.Request) ([]byte, error) {
@@ -472,6 +497,10 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+func writeCodedError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, map[string]string{"code": code, "message": message, "error": message})
 }
 
 func withinDir(root, name string) bool {

@@ -166,11 +166,18 @@ func (m *Manager) Get(id string) (View, bool) {
 	return m.viewLocked(state), true
 }
 
+// LogPath returns the active package version's log path.
+func (m *Manager) LogPath(id string) (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state := m.states[id]; state != nil {
+		return state.logPath, true
+	}
+	return "", false
+}
+
 // Install publishes a validated package and records it as disabled.
 func (m *Manager) Install(ctx context.Context, pkg *bundle.Bundle) (View, error) {
-	if err := checkCompatibility(pkg.Manifest); err != nil {
-		return View{}, err
-	}
 	id := pkg.Manifest.ID
 	lock := m.lockFor(id)
 	lock.Lock()
@@ -187,6 +194,9 @@ func (m *Manager) Install(ctx context.Context, pkg *bundle.Bundle) (View, error)
 	}
 	m.mu.Unlock()
 
+	if err := checkCompatibility(pkg.Manifest); err != nil {
+		return View{}, err
+	}
 	defaults, err := pkg.Manifest.Defaults()
 	if err != nil {
 		return View{}, err
@@ -677,7 +687,7 @@ func (m *Manager) stopLocked(ctx context.Context, state *state) error {
 
 	err := instance.Stop(ctx)
 	if instance.packageDir != m.packageDir(state.record) {
-		m.removeDevelopmentSnapshot(instance.packageDir)
+		m.removePackageDirectory(instance.packageDir)
 	}
 	m.mu.Lock()
 	state.status = StatusStopped
@@ -699,8 +709,8 @@ func (m *Manager) configGetter(state *state) func() map[string]any {
 }
 
 func (m *Manager) packageDir(record store.Plugin) string {
-	if record.DevPackage != "" {
-		return filepath.Join(m.packagesDir, record.DevPackage)
+	if record.PackageDirectory != "" {
+		return filepath.Join(m.packagesDir, record.PackageDirectory)
 	}
 	return filepath.Join(m.packagesDir, record.ID)
 }
@@ -713,7 +723,7 @@ func (m *Manager) viewLocked(state *state) View {
 		Enabled:     state.record.Enabled,
 		Status:      state.status,
 		Error:       state.lastError,
-		Config:      copyMap(state.record.Config),
+		Config:      map[string]any{},
 		InstalledAt: state.record.InstalledAt,
 		LogPath:     state.logPath,
 	}
@@ -726,7 +736,11 @@ func (m *Manager) viewLocked(state *state) View {
 		view.HasLua = state.manifest.Entry.Lua != ""
 		view.HasNative = state.manifest.Native != nil
 		view.ConfigSchema = state.manifest.Config
-		view.Config = state.manifest.Redacted(view.Config)
+		for name, field := range state.manifest.Config {
+			if value, ok := state.record.Config[name]; ok && !field.Secret {
+				view.Config[name] = value
+			}
+		}
 		if view.HasWeb {
 			view.WebPath = "/extensions/" + state.record.ID + "/web/"
 		}

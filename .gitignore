@@ -1,3 +1,8 @@
 /bin/
 /dist/
 /ext-data/
+
+# 工具临时文件与示例插件的运行/构建产物
+.playwright-mcp/
+/examples/*/plugin/.ext/
+/examples/*/plugin/dist/

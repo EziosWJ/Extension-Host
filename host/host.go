@@ -32,6 +32,7 @@ const HostAPIVersion = manifest.HostAPIVersion
 var (
 	ErrNotFound          = lifecycle.ErrNotFound
 	ErrConflict          = lifecycle.ErrConflict
+	ErrIDMismatch        = lifecycle.ErrIDMismatch
 	ErrNotEnabled        = lifecycle.ErrNotEnabled
 	ErrNotRunning        = lifecycle.ErrNotRunning
 	ErrNoLua             = lifecycle.ErrNoLua
@@ -214,22 +215,38 @@ func (h *Host) List(ctx context.Context) ([]Plugin, error) {
 
 // Install publishes and records a ZIP plugin package. The plugin starts disabled.
 func (h *Host) Install(ctx context.Context, zip io.Reader) (Plugin, error) {
-	data, err := io.ReadAll(io.LimitReader(zip, bundle.MaxPackageSize+1))
-	if err != nil {
-		return Plugin{}, fmt.Errorf("read plugin package: %w", err)
-	}
-	if len(data) > bundle.MaxPackageSize {
-		return Plugin{}, fmt.Errorf("%w: package exceeds %d bytes", ErrInvalidPackage, bundle.MaxPackageSize)
-	}
-	pkg, err := bundle.LoadZip(data)
-	if err != nil {
-		return Plugin{}, fmt.Errorf("%w: %v", ErrInvalidPackage, err)
-	}
-	view, err := h.manager.Install(ctx, pkg)
+	pkg, err := loadPackage(zip)
 	if err != nil {
 		return Plugin{}, err
 	}
-	return pluginFromView(view), nil
+	view, err := h.manager.Install(ctx, pkg)
+	return pluginFromView(view), err
+}
+
+// Upgrade replaces the package of an installed plugin and restarts it if enabled.
+// A startup failure after replacement is reported in the returned plugin status.
+func (h *Host) Upgrade(ctx context.Context, id string, zip io.Reader) (Plugin, error) {
+	pkg, err := loadPackage(zip)
+	if err != nil {
+		return Plugin{}, err
+	}
+	view, err := h.manager.Upgrade(ctx, id, pkg)
+	return pluginFromView(view), err
+}
+
+func loadPackage(zip io.Reader) (*bundle.Bundle, error) {
+	data, err := io.ReadAll(io.LimitReader(zip, bundle.MaxPackageSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read plugin package: %w", err)
+	}
+	if len(data) > bundle.MaxPackageSize {
+		return nil, fmt.Errorf("%w: package exceeds %d bytes", ErrInvalidPackage, bundle.MaxPackageSize)
+	}
+	pkg, err := bundle.LoadZip(data)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidPackage, err)
+	}
+	return pkg, nil
 }
 
 // Enable persists the enable intent and starts the plugin.

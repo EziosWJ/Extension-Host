@@ -10,12 +10,8 @@ import (
 	"strings"
 )
 
-// sudoCommand builds a non-interactive root command, falling back to a direct
-// command when the process already runs as root.
+// sudoCommand builds a non-interactive root command.
 func sudoCommand(ctx context.Context, path string, args ...string) *exec.Cmd {
-	if os.Geteuid() == 0 {
-		return exec.CommandContext(ctx, path, args...)
-	}
 	return exec.CommandContext(ctx, "/usr/bin/sudo", append([]string{"-n", "-k", "-u", "root", "--", path}, args...)...)
 }
 

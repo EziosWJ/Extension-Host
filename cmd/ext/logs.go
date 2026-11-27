@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/EziosWJ/Extension-Host/internal/logtail"
 )
 
 func showLogs(ctx context.Context, args []string, workDir string, out io.Writer) error {
@@ -171,7 +173,7 @@ func (cursor *logCursor) write(path string, lines int, out io.Writer) error {
 	var start int64
 	switch {
 	case cursor.info == nil:
-		start, err = logTailStart(file, size, lines)
+		start, err = logtail.Start(file, size, lines)
 	case os.SameFile(cursor.info, info) && size >= cursor.info.Size():
 		// Check bytes before the old end in case the file was truncated and
 		// grew back past that offset between polls.
@@ -197,32 +199,6 @@ func (cursor *logCursor) write(path string, lines int, out io.Writer) error {
 	}
 	cursor.info, cursor.suffix = info, suffix
 	return nil
-}
-
-func logTailStart(file *os.File, size int64, lines int) (int64, error) {
-	if lines == 0 || size == 0 {
-		return 0, nil
-	}
-	const blockSize = 32 * 1024
-	var block [blockSize]byte
-	for end := size; end > 0; {
-		start := max(0, end-blockSize)
-		part := block[:end-start]
-		if _, err := file.ReadAt(part, start); err != nil {
-			return 0, err
-		}
-		for i := len(part) - 1; i >= 0; i-- {
-			position := start + int64(i)
-			if part[i] == '\n' && position != size-1 {
-				lines--
-				if lines == 0 {
-					return position + 1, nil
-				}
-			}
-		}
-		end = start
-	}
-	return 0, nil
 }
 
 func logSuffix(file *os.File, end int64) (string, error) {

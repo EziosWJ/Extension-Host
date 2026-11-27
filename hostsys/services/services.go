@@ -5,6 +5,7 @@ package services
 
 import (
 	"context"
+	"fmt"
 	"strings"
 )
 
@@ -38,17 +39,20 @@ const (
 	ActionStart   Action = "start"
 	ActionStop    Action = "stop"
 	ActionRestart Action = "restart"
+	ActionReload  Action = "reload"
 	ActionEnable  Action = "enable"
 	ActionDisable Action = "disable"
 )
 
-var actionOrder = []Action{ActionStart, ActionStop, ActionRestart, ActionEnable, ActionDisable}
+var actionOrder = []Action{ActionStart, ActionStop, ActionRestart, ActionReload, ActionEnable, ActionDisable}
 
 // Capabilities describes what a backend supports as a whole.
 type Capabilities struct {
 	Start         bool `json:"start"`
 	Stop          bool `json:"stop"`
 	Restart       bool `json:"restart"`
+	Reload        bool `json:"reload"`
+	DaemonReload  bool `json:"daemonReload"`
 	Enable        bool `json:"enable"`
 	Disable       bool `json:"disable"`
 	Logs          bool `json:"logs"`
@@ -78,7 +82,7 @@ type ServiceDetail struct {
 	FragmentPath         string    `json:"fragmentPath"`
 }
 
-// Backend is the minimal service manager interface used by the HTTP layer.
+// Backend is the service manager interface for native GoDesk callers.
 type Backend interface {
 	Name() string
 	Capabilities() Capabilities
@@ -87,10 +91,20 @@ type Backend interface {
 	Start(ctx context.Context, unit string) error
 	Stop(ctx context.Context, unit string) error
 	Restart(ctx context.Context, unit string) error
+	Reload(ctx context.Context, unit string) error
+	DaemonReload(ctx context.Context) error
 	Enable(ctx context.Context, unit string) error
 	Disable(ctx context.Context, unit string) error
 	Logs(ctx context.Context, unit string, lines int) ([]string, error)
+	// StreamLogs follows journal output, emitting lines without their newline.
+	// initialLines is 0 through MaxLogLines inclusive. Zero follows new entries only.
+	// emit must be non-nil and is called synchronously. StreamLogs propagates
+	// emit errors and returns ctx.Err() when the context ends.
+	StreamLogs(ctx context.Context, unit string, initialLines int, emit func(line string) error) error
 }
+
+// MaxLogLines is the maximum number of historical journal lines in one request.
+const MaxLogLines = 2000
 
 // Error carries a machine-readable code and a user-facing message.
 type Error struct {
@@ -103,7 +117,7 @@ func (e *Error) Error() string { return e.Message }
 // ValidAction reports whether action is a known service action.
 func ValidAction(action Action) bool {
 	switch action {
-	case ActionStart, ActionStop, ActionRestart, ActionEnable, ActionDisable:
+	case ActionStart, ActionStop, ActionRestart, ActionReload, ActionEnable, ActionDisable:
 		return true
 	default:
 		return false
@@ -139,6 +153,13 @@ func isHex(c byte) bool {
 	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
 }
 
+func validateUnit(unit string) error {
+	if ValidUnit(unit) {
+		return nil
+	}
+	return &Error{Code: "invalid_unit", Message: fmt.Sprintf("invalid unit %q", unit)}
+}
+
 func actionsFor(state State, boot BootState, capabilities Capabilities) []Action {
 	actions := make([]Action, 0, len(actionOrder))
 	add := func(action Action, supported bool) {
@@ -169,6 +190,7 @@ func actionsFor(state State, boot BootState, capabilities Capabilities) []Action
 		}
 		actions = kept
 	}
+	add(ActionReload, state == StateRunning && capabilities.Reload)
 	switch boot {
 	case BootEnabled:
 		add(ActionDisable, capabilities.Disable)

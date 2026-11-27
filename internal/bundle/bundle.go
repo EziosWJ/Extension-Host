@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -271,6 +272,13 @@ func (b *Bundle) Filename() string {
 }
 
 func build(files map[string][]byte) (*Bundle, error) {
+	for name := range files {
+		for parent := path.Dir(name); parent != "."; parent = path.Dir(parent) {
+			if _, exists := files[parent]; exists {
+				return nil, fmt.Errorf("package path %q is both a file and a directory", parent)
+			}
+		}
+	}
 	data, ok := files["manifest.json"]
 	if !ok {
 		return nil, fmt.Errorf("package: manifest.json is missing from the package root")

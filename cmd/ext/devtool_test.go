@@ -18,6 +18,41 @@ import (
 	"github.com/EziosWJ/Extension-Host/internal/bundle"
 )
 
+func TestStandalonePluginLogsAndUpgrade(t *testing.T) {
+	h, err := host.Open(t.Context(), host.Options{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close(context.Background())
+	pkg, err := bundle.LoadDir("../../examples/hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := pkg.Zip()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plugin, err := h.Install(t.Context(), bytes.NewReader(archive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := standaloneHandler(h, nil)
+	base := "/api/v1/extensions/" + plugin.ID
+	response := requestDevTest(t, handler, "GET", base+"/logs?lines=200", "", http.StatusOK)
+	if response.Body.String() != "{\"lines\":[]}\n" || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("logs = %s, headers = %v", response.Body, response.Header())
+	}
+	request := httptest.NewRequest(http.MethodPost, base+"/upgrade", bytes.NewReader(archive))
+	request.Header.Set("Content-Type", "application/zip")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	var upgraded host.Plugin
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &upgraded) != nil ||
+		upgraded.ID != plugin.ID || upgraded.Enabled || upgraded.Status != host.StatusStopped {
+		t.Fatalf("upgrade = %d %s", response.Code, response.Body)
+	}
+}
+
 func TestProjectTemplatesAndPackage(t *testing.T) {
 	for index, kind := range projectTypes {
 		t.Run(kind.label, func(t *testing.T) {

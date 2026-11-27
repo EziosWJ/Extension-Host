@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"strconv"
@@ -15,16 +16,25 @@ type systemdRuntime struct {
 }
 
 type systemdBackend struct {
-	runtime systemdRuntime
+	runtime   systemdRuntime
+	sudoProbe func(context.Context) error
 }
 
 func newSystemd(systemctl, journalctl string) Backend {
-	return &systemdBackend{runtime: systemdRuntime{systemctl: systemctl, journalctl: journalctl}}
+	return &systemdBackend{
+		runtime:   systemdRuntime{systemctl: systemctl, journalctl: journalctl},
+		sudoProbe: sudoProbe,
+	}
 }
 
 func (b *systemdBackend) Name() string { return "systemd" }
 
-func (b *systemdBackend) Capabilities() Capabilities { return b.runtime.capabilities() }
+func (b *systemdBackend) Capabilities() Capabilities {
+	capabilities := b.runtime.capabilities()
+	capabilities.Reload = true
+	capabilities.DaemonReload = true
+	return capabilities
+}
 
 func (r *systemdRuntime) capabilities() Capabilities {
 	return Capabilities{
@@ -39,7 +49,7 @@ func (r *systemdRuntime) capabilities() Capabilities {
 }
 
 func (b *systemdBackend) List(ctx context.Context) ([]Service, error) {
-	return b.runtime.list(ctx)
+	return b.runtime.list(ctx, b.Capabilities())
 }
 
 func (b *systemdBackend) Start(ctx context.Context, unit string) error {
@@ -54,6 +64,17 @@ func (b *systemdBackend) Restart(ctx context.Context, unit string) error {
 	return b.action(ctx, ActionRestart, unit)
 }
 
+func (b *systemdBackend) Reload(ctx context.Context, unit string) error {
+	if err := validateUnit(unit); err != nil {
+		return err
+	}
+	return reloadError(b.action(ctx, ActionReload, unit))
+}
+
+func (b *systemdBackend) DaemonReload(ctx context.Context) error {
+	return reloadError(b.runAction(ctx, "daemon-reload", "--no-ask-password"))
+}
+
 func (b *systemdBackend) Enable(ctx context.Context, unit string) error {
 	return b.action(ctx, ActionEnable, unit)
 }
@@ -63,12 +84,26 @@ func (b *systemdBackend) Disable(ctx context.Context, unit string) error {
 }
 
 func (b *systemdBackend) action(ctx context.Context, action Action, unit string) error {
-	args := []string{string(action), "--no-ask-password", "--", unit}
-	if os.Geteuid() != 0 && sudoProbe(ctx) == nil {
-		_, err := runCommand(ctx, sudoCommand(ctx, b.runtime.systemctl, args...), true)
-		return err
+	return b.runAction(ctx, string(action), "--no-ask-password", "--", unit)
+}
+
+func (b *systemdBackend) runAction(ctx context.Context, args ...string) error {
+	cmd, usedSudo := nativeSystemctlCommand(ctx, b.runtime.systemctl, os.Geteuid() == 0, b.sudoProbe, args...)
+	_, err := runCommand(ctx, cmd, usedSudo)
+	return err
+}
+
+func nativeSystemctlCommand(ctx context.Context, path string, root bool, probe func(context.Context) error, args ...string) (*exec.Cmd, bool) {
+	if !root && probe(ctx) == nil {
+		return sudoCommand(ctx, path, args...), true
 	}
-	_, err := b.runtime.run(ctx, b.runtime.systemctl, args...)
+	return exec.CommandContext(ctx, path, args...), false
+}
+
+func reloadError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &Error{Code: "timeout", Message: err.Error()}
+	}
 	return err
 }
 
@@ -80,7 +115,7 @@ func (b *systemdBackend) Logs(ctx context.Context, unit string, lines int) ([]st
 	return b.runtime.logs(ctx, unit, lines)
 }
 
-func (r *systemdRuntime) list(ctx context.Context) ([]Service, error) {
+func (r *systemdRuntime) list(ctx context.Context, capabilities Capabilities) ([]Service, error) {
 	files, err := r.run(ctx, r.systemctl, "list-unit-files", "--type=service", "--no-legend", "--plain", "--no-pager")
 	if err != nil {
 		return nil, err
@@ -89,7 +124,36 @@ func (r *systemdRuntime) list(ctx context.Context) ([]Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return buildServices(files, units, r.capabilities()), nil
+	list := buildServices(files, units, capabilities)
+	if !capabilities.Reload {
+		return list, nil
+	}
+	args := []string{"show", "--no-pager", "-p", "Id,Names,CanReload", "--"}
+	firstUnit := len(args)
+	for _, service := range list {
+		if service.State == StateRunning && ValidUnit(service.Name) {
+			args = append(args, service.Name)
+		}
+	}
+	if len(args) == firstUnit {
+		return list, nil
+	}
+	output, err := r.run(ctx, r.systemctl, args...)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if err != nil {
+		// Preserve the listing if the optional action metadata is unavailable.
+		return list, nil
+	}
+	reloadable := parseReloadableUnits(output)
+	for i := range list {
+		service := &list[i]
+		if service.State == StateRunning && reloadable[service.Name] {
+			service.Actions = actionsFor(service.State, service.BootState, capabilities)
+		}
+	}
+	return list, nil
 }
 
 func (r *systemdRuntime) detail(ctx context.Context, unit string) (ServiceDetail, error) {
@@ -108,7 +172,7 @@ func (r *systemdRuntime) detail(ctx context.Context, unit string) (ServiceDetail
 
 func (r *systemdRuntime) logs(ctx context.Context, unit string, lines int) ([]string, error) {
 	if r.journalctl == "" {
-		return nil, &Error{Code: "logs_unavailable", Message: "journalctl 不可用"}
+		return nil, logsUnavailable("journalctl 不可用")
 	}
 	cmd := exec.CommandContext(ctx, r.journalctl,
 		"-u", unit, "-n", strconv.Itoa(lines), "--no-pager", "--quiet", "-o", "short-iso")

@@ -26,7 +26,7 @@ func newPluginSystemd(systemctl, journalctl string) PluginBackend {
 }
 
 func (b *pluginSystemdBackend) List(ctx context.Context) ([]Service, error) {
-	return b.runtime.list(ctx)
+	return b.runtime.list(ctx, b.runtime.capabilities())
 }
 
 func (b *pluginSystemdBackend) Detail(ctx context.Context, unit string) (ServiceDetail, error) {
@@ -66,8 +66,7 @@ func restartCommand(ctx context.Context, systemctl, unit string, elevated, root 
 func serviceCommand(ctx context.Context, systemctl string, action Action, unit string, elevated, root bool) (*exec.Cmd, bool) {
 	args := []string{string(action), "--no-ask-password", "--", unit}
 	if elevated && !root {
-		sudoArgs := append([]string{"-n", "-k", "-u", "root", "--", systemctl}, args...)
-		return exec.CommandContext(ctx, "/usr/bin/sudo", sudoArgs...), true
+		return sudoCommand(ctx, systemctl, args...), true
 	}
 	return exec.CommandContext(ctx, systemctl, args...), false
 }

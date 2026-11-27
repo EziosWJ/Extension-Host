@@ -57,6 +57,7 @@ func parseRuntimeUnits(output string) []runtimeUnit {
 }
 
 func buildServices(unitFiles, runtimeUnits string, capabilities Capabilities) []Service {
+	capabilities.Reload = false // Reload availability requires per-unit properties.
 	files := parseUnitFiles(unitFiles)
 	units := parseRuntimeUnits(runtimeUnits)
 	byName := make(map[string]runtimeUnit, len(units))
@@ -162,6 +163,23 @@ func parseShow(output string) map[string]string {
 		props[strings.TrimSpace(key)] = strings.TrimSpace(value)
 	}
 	return props
+}
+
+func parseReloadableUnits(output string) map[string]bool {
+	reloadable := make(map[string]bool)
+	for block := range strings.SplitSeq(output, "\n\n") {
+		props := parseShow(block)
+		if props["CanReload"] != "yes" {
+			continue
+		}
+		if name := props["Id"]; name != "" {
+			reloadable[name] = true
+		}
+		for name := range strings.FieldsSeq(props["Names"]) {
+			reloadable[name] = true
+		}
+	}
+	return reloadable
 }
 
 // buildDetail maps the properties of `systemctl show` to the detail view.

@@ -3,6 +3,7 @@ package manifest
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -16,6 +17,9 @@ const (
 	// HostAPIVersion is the Host API version implemented by this host.
 	HostAPIVersion = 1
 )
+
+// ErrHostAPIIncompatible means the manifest's valid range excludes this Host API.
+var ErrHostAPIIncompatible = errors.New("plugin requires host API")
 
 var (
 	idPattern      = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?)*$`)
@@ -102,7 +106,7 @@ func (m *Manifest) Validate() error {
 		return fmt.Errorf("manifest.json: invalid hostApi range %d-%d", m.HostAPI.Min, m.HostAPI.Max)
 	}
 	if HostAPIVersion < m.HostAPI.Min || HostAPIVersion > m.HostAPI.Max {
-		return fmt.Errorf("manifest.json: plugin requires host API %d-%d, host provides %d", m.HostAPI.Min, m.HostAPI.Max, HostAPIVersion)
+		return fmt.Errorf("manifest.json: %w %d-%d, host provides %d", ErrHostAPIIncompatible, m.HostAPI.Min, m.HostAPI.Max, HostAPIVersion)
 	}
 	if m.Entry.Web == "" && m.Entry.Lua == "" && m.Entry.Native == "" {
 		return fmt.Errorf("manifest.json: at least one of entry.web, entry.lua or entry.native is required")

@@ -9,6 +9,8 @@ var (
 	ErrNotFound = errors.New("plugin is not installed")
 	// ErrConflict means a plugin with the same ID is already installed.
 	ErrConflict = errors.New("plugin is already installed")
+	// ErrIDMismatch means the uploaded package has a different plugin ID.
+	ErrIDMismatch = errors.New("package ID does not match target plugin")
 	// ErrNotEnabled means the plugin has no persisted enable intent.
 	ErrNotEnabled = errors.New("plugin is not enabled")
 	// ErrNotRunning means the plugin has no running instance.

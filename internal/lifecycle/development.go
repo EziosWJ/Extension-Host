@@ -50,7 +50,7 @@ func (m *Manager) ReloadDevelopment(ctx context.Context, pkg *bundle.Bundle, web
 	published := false
 	defer func() {
 		if !published {
-			m.removeDevelopmentSnapshot(directory)
+			m.removePackageDirectory(directory)
 		}
 	}()
 	if err := pkg.Extract(directory); err != nil {
@@ -59,7 +59,7 @@ func (m *Manager) ReloadDevelopment(ctx context.Context, pkg *bundle.Bundle, web
 
 	oldDirectory := m.packageDir(record)
 	webOnly = webOnly && previous != nil && bytes.Equal(record.Manifest, pkg.Files["manifest.json"])
-	record.DevPackage = filepath.Base(directory)
+	record.PackageDirectory = filepath.Base(directory)
 	record.Name = pkg.Manifest.Name
 	record.Version = pkg.Manifest.Version
 	record.Manifest = pkg.Files["manifest.json"]
@@ -73,7 +73,7 @@ func (m *Manager) ReloadDevelopment(ctx context.Context, pkg *bundle.Bundle, web
 		m.mu.Unlock()
 		published = true
 		if oldDirectory != previous.packageDir {
-			m.removeDevelopmentSnapshot(oldDirectory)
+			m.removePackageDirectory(oldDirectory)
 		}
 		return nil
 	}
@@ -118,12 +118,12 @@ func (m *Manager) ReloadDevelopment(ctx context.Context, pkg *bundle.Bundle, web
 	m.states[id] = next
 	m.mu.Unlock()
 	published = true
-	m.removeDevelopmentSnapshot(oldDirectory)
+	m.removePackageDirectory(oldDirectory)
 	return nil
 }
 
-func (m *Manager) removeDevelopmentSnapshot(directory string) {
+func (m *Manager) removePackageDirectory(directory string) {
 	if err := os.RemoveAll(directory); err != nil {
-		m.logger.Warn("remove development snapshot", "path", directory, "error", err)
+		m.logger.Warn("remove package directory", "path", directory, "error", err)
 	}
 }

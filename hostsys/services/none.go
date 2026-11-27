@@ -23,12 +23,24 @@ func (noneBackend) Stop(context.Context, string) error { return unavailable() }
 
 func (noneBackend) Restart(context.Context, string) error { return unavailable() }
 
+func (noneBackend) Reload(context.Context, string) error { return unsupported() }
+
+func (noneBackend) DaemonReload(context.Context) error { return unsupported() }
+
 func (noneBackend) Enable(context.Context, string) error { return unavailable() }
 
 func (noneBackend) Disable(context.Context, string) error { return unavailable() }
 
 func (noneBackend) Logs(context.Context, string, int) ([]string, error) {
-	return nil, &Error{Code: "logs_unavailable", Message: "没有可用的服务后端"}
+	return nil, logsUnavailable("没有可用的服务后端")
+}
+
+func (noneBackend) StreamLogs(context.Context, string, int, func(string) error) error {
+	return logsUnavailable("没有可用的服务后端")
+}
+
+func unsupported() error {
+	return &Error{Code: "unsupported", Message: "没有可用的服务后端"}
 }
 
 func unavailable() error {

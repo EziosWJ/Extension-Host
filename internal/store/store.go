@@ -14,14 +14,14 @@ import (
 
 // Plugin is the persisted installation record.
 type Plugin struct {
-	ID          string
-	Name        string
-	Version     string
-	Manifest    []byte
-	Config      map[string]any
-	Enabled     bool
-	InstalledAt time.Time
-	DevPackage  string
+	ID               string
+	Name             string
+	Version          string
+	Manifest         []byte
+	Config           map[string]any
+	Enabled          bool
+	InstalledAt      time.Time
+	PackageDirectory string
 }
 
 // Store owns host.db.
@@ -111,25 +111,48 @@ func (s *Store) GetPlugin(ctx context.Context, id string) (Plugin, bool, error) 
 const pluginQuery = `SELECT id, name, version, manifest, config, enabled, installed_at,
 	COALESCE(directory, '') FROM plugins LEFT JOIN development_packages ON plugin_id = id`
 
-// SetDevelopmentPackage commits the new files and metadata together.
+// SetPackage publishes a package directory and its metadata in the same transaction.
+func (s *Store) SetPackage(ctx context.Context, plugin Plugin) error {
+	return s.setPackage(ctx, plugin, false)
+}
+
+// SetDevelopmentPackage also updates the development plugin's config and enable intent.
 func (s *Store) SetDevelopmentPackage(ctx context.Context, plugin Plugin) error {
-	config, err := json.Marshal(plugin.Config)
-	if err != nil {
-		return err
-	}
+	return s.setPackage(ctx, plugin, true)
+}
+
+func (s *Store) setPackage(ctx context.Context, plugin Plugin, development bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx,
-		`UPDATE plugins SET name = ?, version = ?, manifest = ?, config = ?, enabled = ? WHERE id = ?`,
-		plugin.Name, plugin.Version, string(plugin.Manifest), string(config), plugin.Enabled, plugin.ID)
+	result, err := tx.ExecContext(ctx,
+		`UPDATE plugins SET name = ?, version = ?, manifest = ? WHERE id = ?`,
+		plugin.Name, plugin.Version, string(plugin.Manifest), plugin.ID)
 	if err != nil {
 		return err
 	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fmt.Errorf("update plugin %s: not installed", plugin.ID)
+	}
+	if development {
+		config, err := json.Marshal(plugin.Config)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE plugins SET config = ?, enabled = ? WHERE id = ?`,
+			string(config), plugin.Enabled, plugin.ID); err != nil {
+			return err
+		}
+	}
+	// Retain the legacy table name so existing development snapshots still resolve.
 	_, err = tx.ExecContext(ctx, `INSERT INTO development_packages (plugin_id, directory) VALUES (?, ?)
-		ON CONFLICT(plugin_id) DO UPDATE SET directory = excluded.directory`, plugin.ID, plugin.DevPackage)
+		ON CONFLICT(plugin_id) DO UPDATE SET directory = excluded.directory`, plugin.ID, plugin.PackageDirectory)
 	if err != nil {
 		return err
 	}
@@ -233,7 +256,7 @@ func scanPlugin(row scanner) (Plugin, error) {
 		installedAt string
 		enabled     int
 	)
-	if err := row.Scan(&plugin.ID, &plugin.Name, &plugin.Version, &manifestRaw, &configRaw, &enabled, &installedAt, &plugin.DevPackage); err != nil {
+	if err := row.Scan(&plugin.ID, &plugin.Name, &plugin.Version, &manifestRaw, &configRaw, &enabled, &installedAt, &plugin.PackageDirectory); err != nil {
 		if err == sql.ErrNoRows {
 			return Plugin{}, err
 		}

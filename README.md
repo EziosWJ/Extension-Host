@@ -380,6 +380,8 @@ local logs = host.services.logs("caddy.service", 50)
 | `GET /api/v1/extensions` | 插件列表。 |
 | `POST /api/v1/extensions` | 安装 ZIP。支持 `multipart/form-data` 的 `package`/`file` 字段，或原始 ZIP 请求体。 |
 | `GET /api/v1/extensions/{id}` | 插件详情。 |
+| `GET /api/v1/extensions/{id}/logs?lines=200` | 读取当前版本日志的末尾，返回 `{"lines":["..."]}`。默认 200 行，允许 1 到 1000 行；日志不存在或为空时返回 `{"lines":[]}`。 |
+| `POST /api/v1/extensions/{id}/upgrade` | 使用与安装相同的 ZIP 上传方式替换同 ID 插件。提交后返回 `200` 和插件详情。 |
 | `POST /api/v1/extensions/{id}/enable` | 持久化启用意图并启动。 |
 | `POST /api/v1/extensions/{id}/start` | 启动已启用插件。 |
 | `POST /api/v1/extensions/{id}/stop` | 停止实例，保留启用意图。 |
@@ -392,11 +394,14 @@ local logs = host.services.logs("caddy.service", 50)
 
 插件启用并启动后，Web、API 和事件路由才可用；停止、禁用或启动失败时返回 `409`。管理 API 始终可用。
 
+日志、安装和升级的错误响应包含 `code`、`message` 和兼容字段 `error`。重复安装返回 `409 already_installed`，另含 `pluginId`，可用于确认后提交升级。日志参数无效时返回 `400 invalid_lines`。无效的 ZIP 或 Manifest 返回 `400 invalid_package`，不兼容的包返回 `400 incompatible_package`，升级包 ID 与路径不符时返回 `400 id_mismatch`。读取或升级未安装的插件返回 `404 not_found`。
+
 ## 生命周期与存储
 
 | 操作 | 行为 |
 | --- | --- |
 | 安装 | 校验并发布包，记录安装信息；新插件未启用。同 ID 冲突。 |
+| 升级 | 替换同 ID 的包，支持覆盖同版本和降级。保留配置、业务 SQLite 和启用意图。已启用的插件会重启；新实例启动失败时，成功提交的升级返回 `status: "failed"` 和 `error`。 |
 | 启用 | 写入启用意图并启动。启动失败保留意图，状态显示失败原因。 |
 | 启动 | 为已启用插件创建当前进程实例；重复启动收敛为同一实例。 |
 | 停止 | 停止后端，释放订阅和数据库连接，保留启用意图。 |
@@ -410,13 +415,13 @@ local logs = host.services.logs("caddy.service", 50)
 ```text
 <data-dir>/
   host.db                    安装记录、启用意图、配置
-  packages/<id>/             已发布插件包
+  packages/                  已发布插件包，由 host.db 定位当前版本目录
   plugins/<id>/business.db   插件业务 SQLite
   plugins/<id>/data/         host.dataDir
   logs/<id>-<version>.log    插件日志
 ```
 
-卸载默认只删除 `packages/<id>`、安装记录及配置，保留 `plugins/<id>`。`purge=true` 会同时删除该目录。重新安装后继续使用原有业务库。
+卸载默认删除已发布的包、安装记录及配置，保留 `plugins/<id>`。`purge=true` 会同时删除该目录。重新安装后继续使用原有业务库。
 
 ## 嵌入 GoDesk
 

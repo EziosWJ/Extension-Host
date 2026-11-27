@@ -41,7 +41,7 @@ func TestValidAction(t *testing.T) {
 			t.Errorf("ValidAction(%q) = false, want true", action)
 		}
 	}
-	for _, action := range []Action{"", "logs", "reload"} {
+	for _, action := range []Action{"", "logs", "daemon-reload"} {
 		if ValidAction(action) {
 			t.Errorf("ValidAction(%q) = true, want false", action)
 		}

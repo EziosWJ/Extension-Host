@@ -10,7 +10,7 @@ import (
 
 const (
 	DefaultLogLines = 200
-	MaxLogLines     = 2000
+	MaxLogLines     = services.MaxLogLines
 )
 
 // Access is the shared service backend with validation for plugin-supplied unit names.

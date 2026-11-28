@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（必须已存在）'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        env:
+          GOWORK: 'off'
+          CGO_ENABLED: '0'
+        run: go test ./...
+
+      - name: Build release binaries
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          GOWORK: 'off'
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/release"
+          mkdir -p "$out"
+          ldflags="-s -w -X github.com/EziosWJ/Extension-Host/internal/buildinfo.Version=${TAG} -X github.com/EziosWJ/Extension-Host/internal/buildinfo.Commit=$(git rev-parse --short HEAD) -X github.com/EziosWJ/Extension-Host/internal/buildinfo.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          for arch in amd64 arm64; do
+            stage="$RUNNER_TEMP/stage/$arch"
+            mkdir -p "$stage"
+            GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="$ldflags" -o "$stage/ext" ./cmd/ext
+            tar -C "$stage" -czf "$out/ext_${TAG}_linux_${arch}.tar.gz" ext
+          done
+
+      - name: Package example plugins
+        env:
+          GOWORK: 'off'
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/release"
+          go build -trimpath -o "$RUNNER_TEMP/ext" ./cmd/ext
+          for name in hello web-only lua-only services; do
+            manifest="examples/$name/manifest.json"
+            id=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['id'])" "$manifest")
+            version=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$manifest")
+            "$RUNNER_TEMP/ext" pack "examples/$name" -o "$out/${id}-${version}.zip"
+          done
+          ls -l "$out"
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/release"
+          sha256sum ext_*.tar.gz *.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/release"
+          args=()
+          case "$TAG" in
+            *-*) args+=(--prerelease) ;;
+          esac
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$out"/ext_*.tar.gz "$out"/*.zip "$out/SHA256SUMS" --clobber
+          else
+            gh release create "$TAG" "$out"/ext_*.tar.gz "$out"/*.zip "$out/SHA256SUMS" \
+              --title "$TAG" --generate-notes --verify-tag "${args[@]}"
+          fi

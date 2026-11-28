@@ -4,7 +4,7 @@
   <p><strong>面向 GoDesk 插件的轻量运行时与独立宿主。</strong></p>
   <p>同一个插件包，两种运行方式：<code>ext</code> 命令行或可嵌入的 Go 模块。</p>
   <p>
-    <a href="https://github.com/EziosWJ/Extension-Host/releases/tag/v0.1.0"><img src="https://img.shields.io/badge/release-v0.1.0-blue" alt="最新版本"></a>
+    <a href="https://github.com/EziosWJ/Extension-Host/releases/tag/v0.1"><img src="https://img.shields.io/badge/release-v0.1-blue" alt="最新版本"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="Apache License 2.0"></a>
     <a href="https://github.com/EziosWJ/Extension-Host/releases"><img src="https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black" alt="Linux"></a>
   </p>

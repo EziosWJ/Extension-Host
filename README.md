@@ -4,7 +4,7 @@
   <p><strong>A lightweight runtime and standalone host for GoDesk extensions.</strong></p>
   <p>One plugin package, two ways to run it: the <code>ext</code> CLI or an embedded Go module.</p>
   <p>
-    <a href="https://github.com/EziosWJ/Extension-Host/releases/tag/v0.1.0"><img src="https://img.shields.io/badge/release-v0.1.0-blue" alt="Latest release"></a>
+    <a href="https://github.com/EziosWJ/Extension-Host/releases/tag/v0.1"><img src="https://img.shields.io/badge/release-v0.1-blue" alt="Latest release"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="Apache License 2.0"></a>
     <a href="https://github.com/EziosWJ/Extension-Host/releases"><img src="https://img.shields.io/badge/platform-Linux-FCC624?logo=linux&logoColor=black" alt="Linux"></a>
   </p>

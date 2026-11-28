@@ -160,15 +160,12 @@ function configForm(plugin) {
     const label = element("label", field.type === "boolean" ? "check" : "field");
     const input = document.createElement("input");
     input.type = field.type === "boolean" ? "checkbox" : field.secret ? "password" : field.type;
-    input.required = Boolean(field.required && !field.secret && input.type !== "checkbox");
     if (input.type === "number") {
       input.step = field.format === "integer" ? "1" : "any";
       if (field.min != null) input.min = field.min;
       if (field.max != null) input.max = field.max;
     }
-    if (field.format === "writable-directory") input.placeholder = "留空使用插件数据目录";
     if (input.type === "password") {
-      input.placeholder = "留空保留现有值";
       input.autocomplete = "new-password";
     }
     const title = element("span", "", key + (field.required ? " *" : "") + (field.secret ? "（密钥）" : ""));
@@ -178,16 +175,26 @@ function configForm(plugin) {
     grid.append(label);
   }
 
-  function update(config = {}) {
+  function update({ config = {}, redactedConfig = {} } = {}) {
     for (const entry of fields) {
       const { key, field, input, property, baseline } = entry;
-      const next = property === "checked" ? Boolean(config[key]) : field.secret ? "" : String(config[key] ?? "");
-      if (input[property] === baseline && baseline !== next) input[property] = next;
-      entry.baseline = next;
+      const redacted = redactedConfig[key] === true;
+      const hasValue = Object.hasOwn(config, key);
+      const value = hasValue ? config[key] : undefined;
+      const next = property === "checked" ? Boolean(value) : field.secret ? "" : String(value ?? "");
+      if (baseline !== next) {
+        const baselineInput = input[property] === baseline ? input : input.cloneNode();
+        baselineInput[property] = next;
+        entry.baseline = baselineInput[property];
+      }
+      entry.missing = !hasValue && !redacted;
+      input.required = Boolean(field.required && !field.secret && !redacted && property !== "checked");
+      if (field.secret || redacted) input.placeholder = "留空保留现有值";
+      else input.placeholder = field.format === "writable-directory" ? "留空使用插件数据目录" : "";
     }
   }
 
-  update(plugin.config);
+  update(plugin);
   form.append(grid, save, status);
   let saving = false;
   form.addEventListener("submit", async (event) => {
@@ -195,10 +202,12 @@ function configForm(plugin) {
     if (saving) return;
     const values = Object.create(null);
     const submitted = new Map();
-    for (const { key, field, input, property } of fields) {
+    for (const { key, field, input, property, baseline, missing } of fields) {
       const value = input[property];
-      submitted.set(key, value);
+      const requiredBooleanMissing = field.type === "boolean" && field.required && missing;
+      if (value === baseline && !requiredBooleanMissing) continue;
       if (value === "" && (field.secret || field.type === "number")) continue;
+      submitted.set(key, value);
       values[key] = field.type === "number" ? Number(value) : value;
     }
     saving = true;
@@ -216,7 +225,7 @@ function configForm(plugin) {
         if (field.secret && property === "value") input.value = "";
         entry.baseline = input[property];
       }
-      update(saved?.config);
+      update(saved ?? {});
       feedback(status, "配置已保存。", "success");
       await refresh(false);
     } catch (error) {
@@ -315,7 +324,7 @@ function createRow() {
       if (config) { config.form.classList.add("panel-section"); body.insertBefore(config.form, info); }
       schema = nextSchema;
     }
-    config?.update(plugin.config);
+    config?.update(plugin);
 
     const nextSignature = JSON.stringify([plugin.enabled, plugin.status, plugin.webPath, plugin.name]);
     if (nextSignature === signature) return;

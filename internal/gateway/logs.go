@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -32,15 +34,34 @@ func (g *Gateway) logs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lines, err := readLogLines(path, count)
+	if errors.Is(err, logtail.ErrTooLarge) {
+		writeCodedError(w, http.StatusRequestEntityTooLarge, "log_tail_too_large", err.Error())
+		return
+	}
 	if err != nil {
 		g.logger.Error("read plugin log", "plugin", id, "error", err)
 		writeCodedError(w, http.StatusInternalServerError, "log_read_failed", "could not read plugin log")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string][]string{"lines": lines})
+	var payload bytes.Buffer
+	if err := json.NewEncoder(&payload).Encode(map[string][]string{"lines": lines}); err != nil {
+		g.fail(w, err)
+		return
+	}
+	if payload.Len() > logtail.MaxBytes {
+		writeCodedError(w, http.StatusRequestEntityTooLarge, "log_tail_too_large", logtail.ErrTooLarge.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(payload.Bytes())
 }
 
 func readLogLines(path string, count int) ([]string, error) {
+	if path == "" {
+		return []string{}, nil
+	}
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return []string{}, nil
@@ -53,7 +74,7 @@ func readLogLines(path string, count int) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	start, err := logtail.Start(file, info.Size(), count)
+	start, err := logtail.BoundedStart(file, info.Size(), count)
 	if err != nil {
 		return nil, err
 	}

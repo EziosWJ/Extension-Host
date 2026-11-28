@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -94,6 +96,86 @@ func TestStreamLogsStopsAndReaps(t *testing.T) {
 				t.Errorf("journalctl PID %d still present after StreamLogs returned: %v", child, err)
 			}
 		})
+	}
+}
+
+func TestStreamLogsReapsWhileEmitIsBlocked(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires Linux procfs")
+	}
+	journal := serviceTestScript(t, "printf '%s\\n' \"$$\"\nexec sleep 30\n")
+	ctx, cancel := context.WithCancel(t.Context())
+	pid := make(chan int, 1)
+	blocked := make(chan struct{})
+	release := sync.OnceFunc(func() { close(blocked) })
+	done := make(chan struct{})
+	var streamErr error
+	go func() {
+		defer close(done)
+		streamErr = newSystemd("", journal).StreamLogs(ctx, "demo.service", 0, func(line string) error {
+			child, err := strconv.Atoi(line)
+			if err != nil {
+				return err
+			}
+			pid <- child
+			<-blocked
+			return nil
+		})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		release()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("StreamLogs did not finish after releasing emit")
+		}
+	})
+
+	var child int
+	select {
+	case child = <-pid:
+	case <-done:
+		t.Fatalf("StreamLogs returned before emit blocked: %v", streamErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("journalctl never reported its PID")
+	}
+	procStat := filepath.Join("/proc", strconv.Itoa(child), "stat")
+	if _, err := os.Stat(procStat); err != nil {
+		t.Fatalf("journalctl PID %d is missing before cancellation: %v", child, err)
+	}
+	cancel()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	for {
+		_, err := os.Stat(procStat)
+		if errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("checking journalctl PID %d: %v", child, err)
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("journalctl PID %d is still present while emit is blocked", child)
+		}
+	}
+	select {
+	case <-done:
+		t.Fatal("StreamLogs returned while emit was still blocked")
+	default:
+	}
+	release()
+	select {
+	case <-done:
+		if !errors.Is(streamErr, context.Canceled) {
+			t.Errorf("StreamLogs() = %v, want context.Canceled", streamErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("StreamLogs did not finish after releasing emit")
 	}
 }
 

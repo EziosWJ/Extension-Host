@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/EziosWJ/Extension-Host/internal/bundle"
+	"github.com/EziosWJ/Extension-Host/internal/logtail"
 )
 
 // Upgrade replaces an installed package while retaining its configuration and enable intent.
@@ -52,6 +53,7 @@ func (m *Manager) Upgrade(ctx context.Context, id string, pkg *bundle.Bundle) (V
 	record.Name = pkg.Manifest.Name
 	record.Version = pkg.Manifest.Version
 	record.Manifest = pkg.Files["manifest.json"]
+	record.SensitiveKeys = sensitiveConfigKeys(record, pkg.Manifest)
 	wasRunning := current.instance != nil
 	restore := func(cause error) error {
 		if !wasRunning {
@@ -77,7 +79,7 @@ func (m *Manager) Upgrade(ctx context.Context, id string, pkg *bundle.Bundle) (V
 	next := &state{
 		record:   record,
 		manifest: pkg.Manifest,
-		logPath:  m.logPath(id, record.Version),
+		logPath:  logtail.Path(m.logsDir, id, record.Version),
 		status:   StatusStopped,
 	}
 	m.mu.Lock()

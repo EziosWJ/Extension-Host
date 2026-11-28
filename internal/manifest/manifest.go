@@ -78,11 +78,23 @@ type ConfigField struct {
 
 // Parse decodes and validates a manifest.
 func Parse(data []byte) (*Manifest, error) {
+	m, err := ParseStructure(data)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.checkHostAPI(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// ParseStructure validates a manifest independently of the current host API.
+func ParseStructure(data []byte) (*Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("manifest.json: %w", err)
 	}
-	if err := m.Validate(); err != nil {
+	if err := m.validateStructure(); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -90,23 +102,27 @@ func Parse(data []byte) (*Manifest, error) {
 
 // Validate checks the manifest against the host's supported schema and API.
 func (m *Manifest) Validate() error {
+	if err := m.validateStructure(); err != nil {
+		return err
+	}
+	return m.checkHostAPI()
+}
+
+func (m *Manifest) validateStructure() error {
 	if m.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("manifest.json: unsupported schemaVersion %d (host supports %d)", m.SchemaVersion, SchemaVersion)
 	}
-	if !validID(m.ID) {
+	if !ValidID(m.ID) {
 		return fmt.Errorf("manifest.json: invalid id %q (use dot-separated lowercase segments)", m.ID)
 	}
 	if strings.TrimSpace(m.Name) == "" {
 		return fmt.Errorf("manifest.json: name is required")
 	}
-	if !versionPattern.MatchString(m.Version) {
+	if !ValidPackageVersion(m.Version) {
 		return fmt.Errorf("manifest.json: invalid version %q (want semantic version, e.g. 1.2.3)", m.Version)
 	}
 	if m.HostAPI.Min < 1 || m.HostAPI.Max < m.HostAPI.Min {
 		return fmt.Errorf("manifest.json: invalid hostApi range %d-%d", m.HostAPI.Min, m.HostAPI.Max)
-	}
-	if HostAPIVersion < m.HostAPI.Min || HostAPIVersion > m.HostAPI.Max {
-		return fmt.Errorf("manifest.json: %w %d-%d, host provides %d", ErrHostAPIIncompatible, m.HostAPI.Min, m.HostAPI.Max, HostAPIVersion)
 	}
 	if m.Entry.Web == "" && m.Entry.Lua == "" && m.Entry.Native == "" {
 		return fmt.Errorf("manifest.json: at least one of entry.web, entry.lua or entry.native is required")
@@ -358,8 +374,14 @@ func (m *Manifest) MergeConfig(current, values map[string]any) (map[string]any, 
 	return merged, nil
 }
 
-func validID(id string) bool {
+// ValidID reports whether id uses the plugin ID syntax.
+func ValidID(id string) bool {
 	return len(id) > 0 && len(id) <= 128 && idPattern.MatchString(id)
+}
+
+// ValidPackageVersion reports whether version uses the plugin package version syntax.
+func ValidPackageVersion(version string) bool {
+	return versionPattern.MatchString(version)
 }
 
 // ValidPackagePath reports whether name is a clean relative path inside a package.

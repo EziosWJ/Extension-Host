@@ -104,16 +104,16 @@ func (g *Gateway) get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) install(w http.ResponseWriter, r *http.Request) {
-	g.publishPackage(w, r, http.StatusCreated, g.manager.Install)
+	g.publishPackage(w, r, http.StatusCreated, bundle.LoadZipStructure, g.manager.Install)
 }
 
 func (g *Gateway) upgrade(w http.ResponseWriter, r *http.Request) {
-	g.publishPackage(w, r, http.StatusOK, func(ctx context.Context, pkg *bundle.Bundle) (lifecycle.View, error) {
+	g.publishPackage(w, r, http.StatusOK, bundle.LoadZip, func(ctx context.Context, pkg *bundle.Bundle) (lifecycle.View, error) {
 		return g.manager.Upgrade(ctx, r.PathValue("id"), pkg)
 	})
 }
 
-func (g *Gateway) publishPackage(w http.ResponseWriter, r *http.Request, status int, publish func(context.Context, *bundle.Bundle) (lifecycle.View, error)) {
+func (g *Gateway) publishPackage(w http.ResponseWriter, r *http.Request, status int, load func([]byte) (*bundle.Bundle, error), publish func(context.Context, *bundle.Bundle) (lifecycle.View, error)) {
 	ctx, cancel := operationContext(r)
 	defer cancel()
 
@@ -122,7 +122,7 @@ func (g *Gateway) publishPackage(w http.ResponseWriter, r *http.Request, status 
 		writeCodedError(w, http.StatusBadRequest, "invalid_package", err.Error())
 		return
 	}
-	pkg, err := bundle.LoadZip(data)
+	pkg, err := load(data)
 	if errors.Is(err, manifest.ErrHostAPIIncompatible) {
 		g.fail(w, err)
 		return

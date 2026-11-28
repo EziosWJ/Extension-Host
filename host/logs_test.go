@@ -1,19 +1,22 @@
 package host_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/EziosWJ/Extension-Host/host"
+	"github.com/EziosWJ/Extension-Host/internal/logtail"
 )
 
-func TestPluginLogs(t *testing.T) {
+func TestLogsTail(t *testing.T) {
 	ctx := testContext(t)
 	extensionHost, _ := newTestHost(t, ctx)
 	plugin := installExample(t, ctx, extensionHost, "hello")
@@ -57,6 +60,9 @@ func TestPluginLogs(t *testing.T) {
 		t.Fatalf("logs without session: %d", response.Code)
 	}
 	checkLines("", nil) // Missing log.
+	if err := os.MkdirAll(filepath.Dir(plugin.LogPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(plugin.LogPath, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -93,12 +99,92 @@ func TestPluginLogs(t *testing.T) {
 	checkLines("?lines=200", want[len(want)-200:])
 	checkLines("?lines=1000", want[1:])
 
+	if err := os.Truncate(plugin.LogPath, 0); err != nil {
+		t.Fatal(err)
+	}
+	// A sparse file with no newline still represents one oversized log line.
+	if err := os.Truncate(plugin.LogPath, 512<<20); err != nil {
+		t.Fatal(err)
+	}
+	checkExtensionError(t, request(url+"?lines=1", true), http.StatusRequestEntityTooLarge, "log_tail_too_large")
+
+	// JSON escaping can exceed the response budget even when the raw line fits.
+	if err := os.WriteFile(plugin.LogPath, bytes.Repeat([]byte{'<'}, logtail.MaxBytes/4), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checkExtensionError(t, request(url+"?lines=1", true), http.StatusRequestEntityTooLarge, "log_tail_too_large")
+
 	for _, query := range []string{"?lines=0", "?lines=-1", "?lines=1001", "?lines=1.5", "?lines=bad", "?lines=", "?lines=1&lines=2", "?lines=%XX"} {
 		t.Run(query, func(t *testing.T) {
 			checkExtensionError(t, request(url+query, true), http.StatusBadRequest, "invalid_lines")
 		})
 	}
 	checkExtensionError(t, request("/api/v1/extensions/not-installed/logs", true), http.StatusNotFound, "not_found")
+}
+
+func TestLogsIsolatePackageCoordinates(t *testing.T) {
+	ctx := testContext(t)
+	h, dataDir := newTestHost(t, ctx)
+	handler := h.Handler(host.HTTPOptions{})
+	logs := func(id string) []string {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/extensions/"+id+"/logs", nil))
+		var body struct{ Lines []string }
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil {
+			t.Fatalf("read logs for %s: %d %s", id, response.Code, response.Body)
+		}
+		return body.Lines
+	}
+	install := func(id, version, message string) host.Plugin {
+		t.Helper()
+		script := fmt.Sprintf(`host.app.on("start", function() print(%q) end)`, message)
+		archive := upgradeArchive(t, id, version, id, script, nil)
+		plugin, err := h.Install(ctx, bytes.NewReader(archive))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return plugin
+	}
+	first := install("x", "1.2.3-4.5.6", "first-coordinate")
+	legacy := filepath.Join(dataDir, "logs", "x-1.2.3-4.5.6.log")
+	if err := os.WriteFile(legacy, []byte("ambiguous legacy\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if lines := logs(first.ID); len(lines) != 0 {
+		t.Fatalf("ambiguous legacy log was returned before second install: %q", lines)
+	}
+	second := install("x-1.2.3", "4.5.6", "second-coordinate")
+	for _, plugin := range []host.Plugin{first, second} {
+		if lines := logs(plugin.ID); len(lines) != 0 {
+			t.Fatalf("ambiguous legacy log was returned for %s: %q", plugin.ID, lines)
+		}
+		if err := h.Enable(ctx, plugin.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct{ id, own, other string }{
+		{first.ID, "first-coordinate", "second-coordinate"},
+		{second.ID, "second-coordinate", "first-coordinate"},
+	} {
+		body := strings.Join(logs(tc.id), "\n")
+		if !strings.Contains(body, tc.own) || strings.Contains(body, tc.other) || strings.Contains(body, "ambiguous legacy") {
+			t.Fatalf("mixed logs for %s: %q", tc.id, body)
+		}
+	}
+	unique := install("unique", "1.0.0", "new-layout")
+	if err := os.WriteFile(filepath.Join(dataDir, "logs", "unique-1.0.0.log"), []byte("unique legacy\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if lines := logs(unique.ID); !slices.Equal(lines, []string{"unique legacy"}) {
+		t.Fatalf("unique legacy log = %q", lines)
+	}
+	if err := h.Enable(ctx, unique.ID); err != nil {
+		t.Fatal(err)
+	}
+	if body := strings.Join(logs(unique.ID), "\n"); !strings.Contains(body, "new-layout") || strings.Contains(body, "unique legacy") {
+		t.Fatalf("expected new layout to take precedence: %q", body)
+	}
 }
 
 func checkExtensionError(t *testing.T, response *httptest.ResponseRecorder, status int, code string) {

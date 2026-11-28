@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type systemdRuntime struct {
@@ -177,6 +178,7 @@ func (r *systemdRuntime) logs(ctx context.Context, unit string, lines int) ([]st
 	cmd := exec.CommandContext(ctx, r.journalctl,
 		"-u", unit, "-n", strconv.Itoa(lines), "--no-pager", "--quiet", "-o", "short-iso")
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	cmd.WaitDelay = time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -200,6 +202,7 @@ func (r *systemdRuntime) run(ctx context.Context, path string, args ...string) (
 
 func runCommand(ctx context.Context, cmd *exec.Cmd, elevated bool) (string, error) {
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	cmd.WaitDelay = time.Second // Bound the wait for inherited output pipes.
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

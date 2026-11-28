@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/EziosWJ/Extension-Host/internal/bundle"
+	"github.com/EziosWJ/Extension-Host/internal/logtail"
 )
 
 // ReloadDevelopment publishes an updated source snapshot and keeps the plugin's data.
@@ -79,11 +80,12 @@ func (m *Manager) ReloadDevelopment(ctx context.Context, pkg *bundle.Bundle, web
 	}
 
 	record.Config = config
+	record.SensitiveKeys = sensitiveConfigKeys(record, pkg.Manifest)
 	record.Enabled = true
 	next := &state{
 		record:   record,
 		manifest: pkg.Manifest,
-		logPath:  m.logPath(id, record.Version),
+		logPath:  logtail.Path(m.logsDir, id, record.Version),
 		status:   StatusStopped,
 	}
 	restore := func(cause error) error {

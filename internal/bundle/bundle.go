@@ -145,11 +145,20 @@ func loadDir(dir string, project bool, exclude ...string) (*Bundle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read package: %w", err)
 	}
-	return build(files)
+	return build(files, manifest.Parse)
 }
 
 // LoadZip reads and validates a ZIP package.
 func LoadZip(data []byte) (*Bundle, error) {
+	return loadZip(data, manifest.Parse)
+}
+
+// LoadZipStructure validates a ZIP without checking support for its host API.
+func LoadZipStructure(data []byte) (*Bundle, error) {
+	return loadZip(data, manifest.ParseStructure)
+}
+
+func loadZip(data []byte, parseManifest func([]byte) (*manifest.Manifest, error)) (*Bundle, error) {
 	if len(data) > MaxPackageSize {
 		return nil, fmt.Errorf("package exceeds %d bytes", MaxPackageSize)
 	}
@@ -204,7 +213,7 @@ func LoadZip(data []byte) (*Bundle, error) {
 		}
 		files[name] = data
 	}
-	return build(files)
+	return build(files, parseManifest)
 }
 
 // Zip serializes the bundle into a deterministic ZIP archive.
@@ -271,7 +280,7 @@ func (b *Bundle) Filename() string {
 	return name + ".zip"
 }
 
-func build(files map[string][]byte) (*Bundle, error) {
+func build(files map[string][]byte, parseManifest func([]byte) (*manifest.Manifest, error)) (*Bundle, error) {
 	for name := range files {
 		for parent := path.Dir(name); parent != "."; parent = path.Dir(parent) {
 			if _, exists := files[parent]; exists {
@@ -286,7 +295,7 @@ func build(files map[string][]byte) (*Bundle, error) {
 	if len(data) > maxManifest {
 		return nil, fmt.Errorf("package: manifest.json exceeds %d bytes", maxManifest)
 	}
-	parsed, err := manifest.Parse(data)
+	parsed, err := parseManifest(data)
 	if err != nil {
 		return nil, fmt.Errorf("package: %w", err)
 	}

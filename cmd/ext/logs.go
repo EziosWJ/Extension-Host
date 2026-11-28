@@ -73,7 +73,8 @@ func showLogs(ctx context.Context, args []string, workDir string, out io.Writer)
 			return err
 		}
 	}
-	path, err := selectLog(filepath.Join(dataDir, "logs"), pluginID)
+	logDir := filepath.Join(dataDir, "logs")
+	path, err := selectLog(logDir, pluginID)
 	if err != nil {
 		return err
 	}
@@ -82,6 +83,11 @@ func showLogs(ctx context.Context, args []string, workDir string, out io.Writer)
 	if err := cursor.write(path, lines, out); err != nil || !follow {
 		return err
 	}
+	var nestedPath string
+	if filepath.Dir(path) == logDir {
+		id, version := logtail.LegacyIdentity(filepath.Base(path))
+		nestedPath = logtail.Path(logDir, id, version)
+	}
 	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -89,8 +95,28 @@ func showLogs(ctx context.Context, args []string, workDir string, out io.Writer)
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
+			next := path
+			if nestedPath != "" {
+				info, err := os.Lstat(nestedPath)
+				switch {
+				case err == nil && info.Mode().IsRegular():
+					next = nestedPath
+				case err != nil && !errors.Is(err, os.ErrNotExist):
+					return fmt.Errorf("inspect nested plugin log: %w", err)
+				}
+			}
+			// Drain the legacy file before reading the replacement.
 			if err := cursor.write(path, lines, out); err != nil {
 				return err
+			}
+			if next == path {
+				continue
+			}
+			if err := cursor.write(next, lines, out); err != nil {
+				return err
+			}
+			if cursor.path == next {
+				path, nestedPath = next, ""
 			}
 		}
 	}
@@ -121,14 +147,45 @@ func selectLog(dir, pluginID string) (string, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("list plugin logs: %w", err)
 	}
-	var latest os.FileInfo
+	type logFile struct {
+		path  string
+		entry os.DirEntry
+	}
+	files := make(map[string]logFile)
 	for _, entry := range entries {
 		name := entry.Name()
-		if !entry.Type().IsRegular() || !strings.HasSuffix(name, ".log") ||
-			(pluginID != "" && !strings.HasPrefix(name, pluginID+"-")) {
+		if entry.Type().IsRegular() {
+			id, version := logtail.LegacyIdentity(name)
+			if path := logtail.Path(dir, id, version); path != "" && (pluginID == "" || id == pluginID) {
+				files[path] = logFile{filepath.Join(dir, name), entry}
+			}
+		}
+	}
+	packageDir := logtail.PackageDir(dir)
+	pluginDirs, err := os.ReadDir(packageDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("list plugin log directories: %w", err)
+	}
+	for _, entry := range pluginDirs {
+		id := entry.Name()
+		if !entry.IsDir() || (pluginID != "" && id != pluginID) {
 			continue
 		}
-		info, err := entry.Info()
+		versionFiles, err := os.ReadDir(filepath.Join(packageDir, id))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("list logs for plugin %q: %w", id, err)
+		}
+		for _, versionFile := range versionFiles {
+			version, ok := strings.CutSuffix(versionFile.Name(), ".log")
+			if path := logtail.Path(dir, id, version); ok && path != "" && versionFile.Type().IsRegular() {
+				files[path] = logFile{path, versionFile}
+			}
+		}
+	}
+	var latest os.FileInfo
+	var latestPath string
+	for _, file := range files {
+		info, err := file.entry.Info()
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -138,12 +195,14 @@ func selectLog(dir, pluginID string) (string, error) {
 		if latest != nil && pluginID == "" {
 			return "", fmt.Errorf("multiple log files in %s; specify plugin-id", dir)
 		}
-		if latest == nil || info.ModTime().After(latest.ModTime()) {
+		if latest == nil || info.ModTime().After(latest.ModTime()) ||
+			(info.ModTime().Equal(latest.ModTime()) && file.path < latestPath) {
 			latest = info
+			latestPath = file.path
 		}
 	}
 	if latest != nil {
-		return filepath.Join(dir, latest.Name()), nil
+		return latestPath, nil
 	}
 	if pluginID != "" {
 		return "", fmt.Errorf("no log files found for plugin %q in %s", pluginID, dir)
@@ -152,6 +211,7 @@ func selectLog(dir, pluginID string) (string, error) {
 }
 
 type logCursor struct {
+	path   string
 	info   os.FileInfo
 	suffix string
 }
@@ -174,7 +234,7 @@ func (cursor *logCursor) write(path string, lines int, out io.Writer) error {
 	switch {
 	case cursor.info == nil:
 		start, err = logtail.Start(file, size, lines)
-	case os.SameFile(cursor.info, info) && size >= cursor.info.Size():
+	case path == cursor.path && os.SameFile(cursor.info, info) && size >= cursor.info.Size():
 		// Check bytes before the old end in case the file was truncated and
 		// grew back past that offset between polls.
 		var previous string
@@ -197,7 +257,7 @@ func (cursor *logCursor) write(path string, lines int, out io.Writer) error {
 	if _, err := io.Copy(out, io.NewSectionReader(file, start, size-start)); err != nil {
 		return fmt.Errorf("copy plugin log: %w", err)
 	}
-	cursor.info, cursor.suffix = info, suffix
+	cursor.path, cursor.info, cursor.suffix = path, info, suffix
 	return nil
 }
 

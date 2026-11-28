@@ -93,6 +93,8 @@ type Plugin struct {
 	InstalledAt  time.Time              `json:"installedAt"`
 	StartedAt    *time.Time             `json:"startedAt,omitempty"`
 	LogPath      string                 `json:"logPath"`
+	// RedactedConfig identifies saved values hidden after their fields stopped being secret.
+	RedactedConfig map[string]bool `json:"redactedConfig,omitempty"`
 }
 
 // ConfigField describes one configuration value.
@@ -286,22 +288,23 @@ func (h *Host) Close(ctx context.Context) error {
 
 func pluginFromView(view lifecycle.View) Plugin {
 	plugin := Plugin{
-		ID:          view.ID,
-		Name:        view.Name,
-		Version:     view.Version,
-		Enabled:     view.Enabled,
-		Status:      Status(view.Status),
-		Error:       view.Error,
-		HasWeb:      view.HasWeb,
-		HasLua:      view.HasLua,
-		HasNative:   view.HasNative,
-		WebPath:     view.WebPath,
-		APIPath:     view.APIPath,
-		EventsPath:  view.EventsPath,
-		Config:      view.Config,
-		InstalledAt: view.InstalledAt,
-		StartedAt:   view.StartedAt,
-		LogPath:     view.LogPath,
+		ID:             view.ID,
+		Name:           view.Name,
+		Version:        view.Version,
+		Enabled:        view.Enabled,
+		Status:         Status(view.Status),
+		Error:          view.Error,
+		HasWeb:         view.HasWeb,
+		HasLua:         view.HasLua,
+		HasNative:      view.HasNative,
+		WebPath:        view.WebPath,
+		APIPath:        view.APIPath,
+		EventsPath:     view.EventsPath,
+		Config:         view.Config,
+		RedactedConfig: view.RedactedConfig,
+		InstalledAt:    view.InstalledAt,
+		StartedAt:      view.StartedAt,
+		LogPath:        view.LogPath,
 	}
 	if len(view.ConfigSchema) > 0 {
 		plugin.ConfigSchema = make(map[string]ConfigField, len(view.ConfigSchema))

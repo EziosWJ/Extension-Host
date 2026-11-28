@@ -394,7 +394,7 @@ local logs = host.services.logs("caddy.service", 50)
 
 插件启用并启动后，Web、API 和事件路由才可用；停止、禁用或启动失败时返回 `409`。管理 API 始终可用。
 
-日志、安装和升级的错误响应包含 `code`、`message` 和兼容字段 `error`。重复安装返回 `409 already_installed`，另含 `pluginId`，可用于确认后提交升级。日志参数无效时返回 `400 invalid_lines`。无效的 ZIP 或 Manifest 返回 `400 invalid_package`，不兼容的包返回 `400 incompatible_package`，升级包 ID 与路径不符时返回 `400 id_mismatch`。读取或升级未安装的插件返回 `404 not_found`。
+日志、安装和升级的错误响应包含 `code`、`message` 和兼容字段 `error`。重复安装返回 `409 already_installed`，另含 `pluginId`，可用于确认后提交升级。日志参数无效时返回 `400 invalid_lines`。请求的日志内容或编码后的响应超过 2 MiB 时返回 `413 log_tail_too_large`。无效的 ZIP 或 Manifest 返回 `400 invalid_package`，不兼容的包返回 `400 incompatible_package`，升级包 ID 与路径不符时返回 `400 id_mismatch`。读取或升级未安装的插件返回 `404 not_found`。
 
 ## 生命周期与存储
 
@@ -418,7 +418,7 @@ local logs = host.services.logs("caddy.service", 50)
   packages/                  已发布插件包，由 host.db 定位当前版本目录
   plugins/<id>/business.db   插件业务 SQLite
   plugins/<id>/data/         host.dataDir
-  logs/<id>-<version>.log    插件日志
+  logs/by-plugin/<id>/<version>.log    插件日志
 ```
 
 卸载默认删除已发布的包、安装记录及配置，保留 `plugins/<id>`。`purge=true` 会同时删除该目录。重新安装后继续使用原有业务库。

@@ -19,6 +19,7 @@ type Plugin struct {
 	Version          string
 	Manifest         []byte
 	Config           map[string]any
+	SensitiveKeys    map[string]bool
 	Enabled          bool
 	InstalledAt      time.Time
 	PackageDirectory string
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS plugins (
 	version TEXT NOT NULL,
 	manifest TEXT NOT NULL,
 	config TEXT NOT NULL DEFAULT '{}',
+	sensitive_keys TEXT NOT NULL DEFAULT '{}',
 	enabled INTEGER NOT NULL DEFAULT 0,
 	installed_at TEXT NOT NULL
 );
@@ -62,10 +64,26 @@ CREATE TABLE IF NOT EXISTS host_settings (
 	key TEXT PRIMARY KEY,
 	value TEXT NOT NULL
 );`
-	if _, err := s.db.ExecContext(ctx, schema); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("initialize host database: %w", err)
 	}
-	return nil
+	var hasSensitiveKeys bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM pragma_table_info('plugins') WHERE name = 'sensitive_keys'
+	)`).Scan(&hasSensitiveKeys); err != nil {
+		return fmt.Errorf("inspect plugins schema: %w", err)
+	}
+	if !hasSensitiveKeys {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE plugins ADD COLUMN sensitive_keys TEXT NOT NULL DEFAULT '{}'`); err != nil {
+			return fmt.Errorf("add sensitive config keys: %w", err)
+		}
+	}
+	return tx.Commit()
 }
 
 // Close closes the host database.
@@ -109,7 +127,7 @@ func (s *Store) GetPlugin(ctx context.Context, id string) (Plugin, bool, error) 
 }
 
 const pluginQuery = `SELECT id, name, version, manifest, config, enabled, installed_at,
-	COALESCE(directory, '') FROM plugins LEFT JOIN development_packages ON plugin_id = id`
+	COALESCE(directory, ''), sensitive_keys FROM plugins LEFT JOIN development_packages ON plugin_id = id`
 
 // SetPackage publishes a package directory and its metadata in the same transaction.
 func (s *Store) SetPackage(ctx context.Context, plugin Plugin) error {
@@ -122,14 +140,18 @@ func (s *Store) SetDevelopmentPackage(ctx context.Context, plugin Plugin) error 
 }
 
 func (s *Store) setPackage(ctx context.Context, plugin Plugin, development bool) error {
+	sensitiveKeys, err := json.Marshal(plugin.SensitiveKeys)
+	if err != nil {
+		return err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	result, err := tx.ExecContext(ctx,
-		`UPDATE plugins SET name = ?, version = ?, manifest = ? WHERE id = ?`,
-		plugin.Name, plugin.Version, string(plugin.Manifest), plugin.ID)
+		`UPDATE plugins SET name = ?, version = ?, manifest = ?, sensitive_keys = ? WHERE id = ?`,
+		plugin.Name, plugin.Version, string(plugin.Manifest), string(sensitiveKeys), plugin.ID)
 	if err != nil {
 		return err
 	}
@@ -182,10 +204,14 @@ func (s *Store) InsertPlugin(ctx context.Context, plugin Plugin) error {
 	if err != nil {
 		return fmt.Errorf("encode plugin config: %w", err)
 	}
+	sensitiveKeys, err := json.Marshal(plugin.SensitiveKeys)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO plugins (id, name, version, manifest, config, enabled, installed_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO plugins (id, name, version, manifest, config, enabled, installed_at, sensitive_keys) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		plugin.ID, plugin.Name, plugin.Version, string(plugin.Manifest), string(config), plugin.Enabled,
-		plugin.InstalledAt.UTC().Format(time.RFC3339Nano))
+		plugin.InstalledAt.UTC().Format(time.RFC3339Nano), string(sensitiveKeys))
 	if err != nil {
 		return fmt.Errorf("insert plugin: %w", err)
 	}
@@ -209,12 +235,16 @@ func (s *Store) SetEnabled(ctx context.Context, id string, enabled bool) error {
 }
 
 // SetConfig persists a plugin configuration.
-func (s *Store) SetConfig(ctx context.Context, id string, config map[string]any) error {
+func (s *Store) SetConfig(ctx context.Context, id string, config map[string]any, sensitiveKeys map[string]bool) error {
 	data, err := json.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("encode plugin config: %w", err)
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE plugins SET config = ? WHERE id = ?`, string(data), id)
+	keys, err := json.Marshal(sensitiveKeys)
+	if err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE plugins SET config = ?, sensitive_keys = ? WHERE id = ?`, string(data), string(keys), id)
 	if err != nil {
 		return fmt.Errorf("update plugin config: %w", err)
 	}
@@ -253,10 +283,11 @@ func scanPlugin(row scanner) (Plugin, error) {
 		plugin      Plugin
 		manifestRaw string
 		configRaw   string
+		keysRaw     string
 		installedAt string
 		enabled     int
 	)
-	if err := row.Scan(&plugin.ID, &plugin.Name, &plugin.Version, &manifestRaw, &configRaw, &enabled, &installedAt, &plugin.PackageDirectory); err != nil {
+	if err := row.Scan(&plugin.ID, &plugin.Name, &plugin.Version, &manifestRaw, &configRaw, &enabled, &installedAt, &plugin.PackageDirectory, &keysRaw); err != nil {
 		if err == sql.ErrNoRows {
 			return Plugin{}, err
 		}
@@ -268,6 +299,9 @@ func scanPlugin(row scanner) (Plugin, error) {
 	}
 	if plugin.Config == nil {
 		plugin.Config = map[string]any{}
+	}
+	if err := json.Unmarshal([]byte(keysRaw), &plugin.SensitiveKeys); err != nil {
+		return Plugin{}, fmt.Errorf("decode sensitive config keys for %s: %w", plugin.ID, err)
 	}
 	plugin.Enabled = enabled != 0
 	parsed, err := time.Parse(time.RFC3339Nano, installedAt)

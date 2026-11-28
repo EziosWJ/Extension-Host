@@ -18,7 +18,12 @@ func TestShowLogsProject(t *testing.T) {
 	}
 	writeDevTestFile(t, filepath.Join(dir, "manifest.json"), `{"id":"com.example.project"}`)
 	writeDevTestFile(t, filepath.Join(logDir, "com.example.other-1.0.0.log"), "wrong plugin\n")
-	writeDevTestFile(t, filepath.Join(logDir, "com.example.project-1.0.0.log"), "first\nsecond\nthird\n")
+	projectLogs := filepath.Join(logDir, "by-plugin", "com.example.project")
+	if err := os.MkdirAll(projectLogs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeDevTestFile(t, filepath.Join(logDir, "com.example.project-1.0.0.log"), "legacy log\n")
+	writeDevTestFile(t, filepath.Join(projectLogs, "1.0.0.log"), "first\nsecond\nthird\n")
 
 	var out strings.Builder
 	if err := showLogs(t.Context(), []string{"-n", "2"}, dir, &out); err != nil {
@@ -138,6 +143,29 @@ func TestShowLogsFollow(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectOutput(rotated)
+
+	nestedDir := filepath.Join(logDir, "by-plugin", "project")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nestedPath := filepath.Join(nestedDir, "1.0.0.log")
+	const restarted = "restart line one\nrestart line two\n"
+	writeDevTestFile(t, replacement, restarted)
+	if err := os.Rename(replacement, nestedPath); err != nil {
+		t.Fatal(err)
+	}
+	expectOutput(restarted)
+
+	file, err = os.OpenFile(nestedPath, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr = file.WriteString("appended after restart\n")
+	closeErr = file.Close()
+	if writeErr != nil || closeErr != nil {
+		t.Fatalf("append nested log: write %v, close %v", writeErr, closeErr)
+	}
+	expectOutput("appended after restart\n")
 
 	cancel()
 	select {

@@ -39,28 +39,44 @@ func (b *systemdBackend) StreamLogs(ctx context.Context, unit string, initialLin
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	cmd.WaitDelay = time.Second // Bound the wait for inherited stderr to close.
-	stdout, err := cmd.StdoutPipe()
+	// Own stdout so Wait can reap the process without closing the reader.
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		return commandError(err, "")
 	}
-	kill := cmd.Cancel
-	cmd.Cancel = func() error {
-		err := kill()
-		// Unblock the reader even if another process inherited stdout.
+	cmd.Stdout = stdoutWriter
+	err = cmd.Start()
+	_ = stdoutWriter.Close()
+	if err != nil {
 		_ = stdout.Close()
-		return err
-	}
-	if err := cmd.Start(); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
 		return journalStreamError(err, "")
 	}
+
+	// Cancellation must close stdout even if Wait has already reaped the
+	// process and a descendant still holds the write end.
+	stdoutClosed := make(chan struct{})
+	stopClosingStdout := context.AfterFunc(ctx, func() {
+		_ = stdout.Close()
+		close(stdoutClosed)
+	})
+
+	reaped := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = cmd.Wait()
+		close(reaped)
+	}()
 	defer func() {
-		if cmd.ProcessState == nil {
-			cancel()
-			_ = cmd.Wait()
+		cancel()
+		if stopClosingStdout() {
+			_ = stdout.Close()
+		} else {
+			<-stdoutClosed
 		}
+		<-reaped
 	}()
 
 	reader := bufio.NewReader(stdout)
@@ -82,12 +98,12 @@ func (b *systemdBackend) StreamLogs(ctx context.Context, unit string, initialLin
 		}
 	}
 
-	err = cmd.Wait()
+	<-reaped
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
-	if err != nil {
-		return journalStreamError(err, strings.TrimSpace(stderr.String()))
+	if waitErr != nil {
+		return journalStreamError(waitErr, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }

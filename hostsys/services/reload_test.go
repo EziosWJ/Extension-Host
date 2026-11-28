@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -164,4 +166,81 @@ func TestNoneReloadAndStreamLogs(t *testing.T) {
 	assertServiceErrorCode(t, backend.Reload(ctx, "demo.service"), "unsupported")
 	assertServiceErrorCode(t, backend.DaemonReload(ctx), "unsupported")
 	assertServiceErrorCode(t, backend.StreamLogs(ctx, "demo.service", 0, func(string) error { return nil }), "logs_unavailable")
+}
+
+func TestSystemdReloadDeadlineWithInheritedOutput(t *testing.T) {
+	path := serviceTestScript(t, `
+sleep 30 &
+printf '%s\n' "$!" > "$RELOAD_TEST_CHILD"
+wait
+`)
+	backend := newSystemd(path, "").(*systemdBackend)
+	backend.sudoProbe = func(context.Context) error { return errors.New("password required") }
+	for _, tc := range []struct {
+		name string
+		run  func(context.Context) error
+	}{
+		{"reload", func(ctx context.Context) error { return backend.Reload(ctx, "demo.service") }},
+		{"daemon-reload", backend.DaemonReload},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pidFile := filepath.Join(t.TempDir(), "child.pid")
+			t.Setenv("RELOAD_TEST_CHILD", pidFile)
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			done := make(chan struct{})
+			var runErr error
+			go func() {
+				defer close(done)
+				runErr = tc.run(ctx)
+			}()
+			t.Cleanup(func() {
+				cancel()
+				data, _ := os.ReadFile(pidFile)
+				if pid, _ := strconv.Atoi(strings.TrimSpace(string(data))); pid > 0 {
+					child, err := os.FindProcess(pid)
+					if err == nil {
+						err = child.Kill()
+						_ = child.Release()
+					}
+					if err != nil && !errors.Is(err, os.ErrProcessDone) {
+						t.Errorf("cleaning up background PID %d: %v", pid, err)
+					}
+				}
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Error("reload did not finish after cleaning up the background child")
+				}
+			})
+
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				data, err := os.ReadFile(pidFile)
+				if err == nil && strings.HasSuffix(string(data), "\n") {
+					break
+				}
+				if err != nil && !errors.Is(err, os.ErrNotExist) {
+					t.Fatal(err)
+				}
+				select {
+				case <-done:
+					t.Fatalf("reload returned before starting its background child: %v", runErr)
+				case <-ctx.Done():
+					t.Fatal("background child did not start before the deadline")
+				case <-ticker.C:
+				}
+			}
+			if err := ctx.Err(); err != nil {
+				t.Fatalf("context expired before the background child was confirmed running: %v", err)
+			}
+			deadline, _ := ctx.Deadline()
+			select {
+			case <-done:
+				assertServiceErrorCode(t, runErr, "timeout")
+			case <-time.After(time.Until(deadline.Add(3 * time.Second))):
+				t.Fatal("reload still blocked on inherited output 3s after its deadline")
+			}
+		})
+	}
 }

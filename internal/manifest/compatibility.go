@@ -12,12 +12,22 @@ const Version = "0.3.0"
 
 // CheckCompatibility checks requirements against the actual installation host.
 func (m *Manifest) CheckCompatibility() error {
+	if err := m.checkHostAPI(); err != nil {
+		return err
+	}
 	if m.MinHostVersion != "" && compareVersions(Version, m.MinHostVersion) < 0 {
 		return fmt.Errorf("requires Extension Host >= %s (current: %s)", m.MinHostVersion, Version)
 	}
 	platform := runtime.GOOS + "-" + runtime.GOARCH
 	if m.Native != nil && m.Native.Platform != platform {
 		return fmt.Errorf("native plugin targets %s (current: %s)", m.Native.Platform, platform)
+	}
+	return nil
+}
+
+func (m *Manifest) checkHostAPI() error {
+	if HostAPIVersion < m.HostAPI.Min || HostAPIVersion > m.HostAPI.Max {
+		return fmt.Errorf("manifest.json: %w %d-%d, host provides %d", ErrHostAPIIncompatible, m.HostAPI.Min, m.HostAPI.Max, HostAPIVersion)
 	}
 	return nil
 }

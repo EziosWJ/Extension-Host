@@ -3,6 +3,7 @@ package host_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -114,6 +115,197 @@ func TestUpgradeDisabledPluginAllowsSameVersionAndDowngrade(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func TestUpgradeRetainsSecretRedactionAcrossSchemaChanges(t *testing.T) {
+	ctx := testContext(t)
+	h, dataDir := newTestHost(t, ctx)
+	installUpgradeFixture(t, ctx, h)
+	handler := h.Handler(host.HTTPOptions{})
+	const secret = "retained-value"
+	update := func(body string) *httptest.ResponseRecorder {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPut, upgradePath+"/config", strings.NewReader(body)))
+		return response
+	}
+	checkRedacted := func(response *httptest.ResponseRecorder) {
+		t.Helper()
+		if response.Code != http.StatusOK || strings.Contains(response.Body.String(), secret) {
+			t.Fatalf("management response status = %d, saved secret present = %t",
+				response.Code, strings.Contains(response.Body.String(), secret))
+		}
+	}
+	checkViews := func() {
+		t.Helper()
+		for _, path := range []string{upgradePath, "/api/v1/extensions"} {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			checkRedacted(response)
+		}
+	}
+	checkRedacted(update(`{"token":"retained-value"}`))
+	if err := h.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Model an installation written before sensitive keys had a dedicated column.
+	db, err := sql.Open("sqlite", filepath.Join(dataDir, "host.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(ctx, `ALTER TABLE plugins DROP COLUMN sensitive_keys`)
+	closeErr := db.Close()
+	if err != nil || closeErr != nil {
+		t.Fatalf("prepare legacy database: %v, close: %v", err, closeErr)
+	}
+	h = openHost(t, ctx, dataDir)
+	handler = h.Handler(host.HTTPOptions{})
+	checkViews()
+
+	replacement := func(version, tokenField string) []byte {
+		return upgradeArchive(t, upgradeID, version, "Replacement", upgradeScript("new"), map[string]string{
+			"manifest.json": fmt.Sprintf(`{"schemaVersion":1,"id":%q,"name":"Replacement","version":%q,
+				"hostApi":{"min":1,"max":1},"entry":{"lua":"init.lua"},
+				"config":{"greeting":{"type":"string"}%s}}`, upgradeID, version, tokenField),
+		})
+	}
+	ordinary := `,"token":{"type":"string","required":true}`
+	for _, archive := range [][]byte{replacement("3.0.0", ordinary), replacement("2.0.0", ""), replacement("1.0.0", ordinary)} {
+		checkRedacted(uploadPlugin(handler, upgradePath+"/upgrade", archive))
+		checkViews()
+	}
+	if err := h.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h = openHost(t, ctx, dataDir)
+	handler = h.Handler(host.HTTPOptions{})
+	checkViews()
+	if err := h.Enable(ctx, upgradeID); err != nil {
+		t.Fatal(err)
+	}
+	checkState := func(want string) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/extensions/"+upgradeID+"/api/state", nil))
+		if response.Code != http.StatusOK || response.Body.String() != want {
+			t.Fatalf("instance state = %d %q, want %q", response.Code, response.Body.String(), want)
+		}
+	}
+	checkState("new:default:secret-ok:missing:missing:missing")
+	saved := update(`{"greeting":"changed"}`)
+	checkRedacted(saved)
+	savedPlugin := decodeUpgrade(t, saved)
+	if _, visible := savedPlugin.Config["token"]; visible || !savedPlugin.RedactedConfig["token"] {
+		t.Fatal("saving greeting did not retain the token's redaction marker")
+	}
+	checkViews()
+	if err := h.Stop(ctx, upgradeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Start(ctx, upgradeID); err != nil {
+		t.Fatal(err)
+	}
+	checkState("new:changed:secret-ok:missing:new:new")
+
+	var updated host.Plugin
+	response := update(`{"token":"ordinary-value"}`)
+	checkRedacted(response)
+	if err := json.Unmarshal(response.Body.Bytes(), &updated); err != nil || updated.Config["token"] != "ordinary-value" || updated.RedactedConfig["token"] {
+		t.Fatalf("explicit overwrite did not clear redaction: %v", err)
+	}
+}
+
+func TestUpgradeRollbackAfterPublicationFailure(t *testing.T) {
+	ctx := testContext(t)
+	h, dataDir := newTestHost(t, ctx)
+	old := installUpgradeFixture(t, ctx, h)
+	server := startServer(t, h)
+	if status := httpJSON(t, http.MethodPut, server.URL+upgradePath+"/config",
+		map[string]any{"greeting": "saved", "token": "retained-value"}, nil); status != http.StatusOK {
+		t.Fatalf("configure = %d", status)
+	}
+	if err := h.Enable(ctx, old.ID); err != nil {
+		t.Fatal(err)
+	}
+	running := getPlugin(t, h, old.ID)
+
+	db, err := sql.Open("sqlite", filepath.Join(dataDir, "host.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Fail after the metadata update, when the transaction publishes the directory.
+	if _, err := db.ExecContext(ctx, `CREATE TRIGGER reject_upgrade BEFORE INSERT ON development_packages
+		BEGIN SELECT RAISE(ABORT, 'injected package publication failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	archive := upgradeArchive(t, old.ID, "3.0.0", "Unpublished", upgradeScript("new"), nil)
+	response := uploadPlugin(h.Handler(host.HTTPOptions{}), upgradePath+"/upgrade", archive)
+	checkExtensionError(t, response, http.StatusInternalServerError, "internal_error")
+	if !strings.Contains(response.Body.String(), "injected package publication failure") {
+		t.Fatalf("upgrade did not reach publication: %s", response.Body)
+	}
+	current := getPlugin(t, h, old.ID)
+	if running.StartedAt == nil || current.StartedAt == nil || !current.StartedAt.After(*running.StartedAt) {
+		t.Fatal("previous instance was not restarted")
+	}
+	running.StartedAt = current.StartedAt
+	if !reflect.DeepEqual(current, running) {
+		t.Fatalf("rollback changed plugin metadata: %+v", current)
+	}
+	// The old startup hook can see the previous instance's stop marker.
+	if status, body := httpGet(t, server.URL+old.APIPath+"state"); status != http.StatusOK || body != "old:saved:secret-ok:missing:old:old" {
+		t.Fatalf("restarted instance = %d %q", status, body)
+	}
+	entries, err := os.ReadDir(filepath.Join(dataDir, "packages"))
+	if err != nil || len(entries) != 1 || entries[0].Name() != old.ID {
+		t.Fatalf("package directories after rollback = %v, %v", entries, err)
+	}
+
+	if err := h.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reopened := openHost(t, ctx, dataDir)
+	if err := reopened.Restore(ctx); err != nil {
+		t.Fatal(err)
+	}
+	restored := getPlugin(t, reopened, old.ID)
+	running.StartedAt = restored.StartedAt
+	if !reflect.DeepEqual(restored, running) {
+		t.Fatalf("rollback changed persisted metadata: %+v", restored)
+	}
+	reopenedServer := startServer(t, reopened)
+	if status, body := httpGet(t, reopenedServer.URL+old.APIPath+"state"); status != http.StatusOK || body != "old:saved:secret-ok:missing:old:old" {
+		t.Fatalf("reopened instance = %d %q", status, body)
+	}
+}
+
+func TestUpgradeInstallConflictPrecedesHostAPICompatibility(t *testing.T) {
+	ctx := testContext(t)
+	h, _ := newTestHost(t, ctx)
+	old := installUpgradeFixture(t, ctx, h)
+	handler := h.Handler(host.HTTPOptions{})
+	files := map[string]string{
+		"manifest.json": fmt.Sprintf(`{"schemaVersion":1,"id":%q,"name":"Future","version":"3.0.0",
+			"hostApi":{"min":200,"max":200},"entry":{"lua":"init.lua"}}`, old.ID),
+		"init.lua": upgradeScript("future"),
+	}
+	archive := zipFiles(t, files)
+	response := uploadPlugin(handler, "/api/v1/extensions", archive)
+	checkExtensionError(t, response, http.StatusConflict, "already_installed")
+	var conflict struct {
+		PluginID string `json:"pluginId"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &conflict); err != nil || conflict.PluginID != old.ID {
+		t.Fatalf("conflict = %s", response.Body)
+	}
+	checkExtensionError(t, uploadPlugin(handler, upgradePath+"/upgrade", archive), http.StatusBadRequest, "incompatible_package")
+
+	delete(files, "init.lua")
+	checkExtensionError(t, uploadPlugin(handler, "/api/v1/extensions", zipFiles(t, files)), http.StatusBadRequest, "invalid_package")
+	files["init.lua"] = upgradeScript("future")
+	files["manifest.json"] = strings.Replace(files["manifest.json"], old.ID, "future", 1)
+	checkExtensionError(t, uploadPlugin(handler, "/api/v1/extensions", zipFiles(t, files)), http.StatusBadRequest, "incompatible_package")
 }
 
 func TestRejectedUpgradeLeavesRunningInstanceAndPackageIntact(t *testing.T) {

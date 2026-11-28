@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/EziosWJ/Extension-Host/internal/bundle"
+	"github.com/EziosWJ/Extension-Host/internal/logtail"
 	"github.com/EziosWJ/Extension-Host/internal/lua"
 	"github.com/EziosWJ/Extension-Host/internal/manifest"
 	"github.com/EziosWJ/Extension-Host/internal/native"
@@ -50,6 +52,8 @@ type View struct {
 	InstalledAt  time.Time                       `json:"installedAt"`
 	StartedAt    *time.Time                      `json:"startedAt,omitempty"`
 	LogPath      string                          `json:"logPath"`
+	// RedactedConfig identifies saved values hidden after their fields stopped being secret.
+	RedactedConfig map[string]bool `json:"redactedConfig,omitempty"`
 }
 
 // Options configures a Manager.
@@ -121,9 +125,11 @@ func New(ctx context.Context, opts Options) (*Manager, error) {
 	}
 	for _, record := range records {
 		state := &state{record: record, status: StatusStopped}
-		state.logPath = manager.logPath(record.ID, record.Version)
-		parsed, err := manifest.Parse(record.Manifest)
+		state.logPath = logtail.Path(manager.logsDir, record.ID, record.Version)
+		parsed, err := manifest.ParseStructure(record.Manifest)
 		if err == nil {
+			// Databases created before sensitive-key tracking still have the old schema.
+			state.record.SensitiveKeys = sensitiveConfigKeys(record, parsed)
 			err = parsed.CheckCompatibility()
 		}
 		if err != nil {
@@ -166,14 +172,27 @@ func (m *Manager) Get(id string) (View, bool) {
 	return m.viewLocked(state), true
 }
 
-// LogPath returns the active package version's log path.
+// LogPath returns the active package version's readable log path.
 func (m *Manager) LogPath(id string) (string, bool) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if state := m.states[id]; state != nil {
-		return state.logPath, true
+	state := m.states[id]
+	m.mu.Unlock()
+	if state == nil {
+		return "", false
 	}
-	return "", false
+	path := state.logPath
+	if path != "" {
+		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+			legacyName := id + "-" + filepath.Base(path)
+			if legacyID, _ := logtail.LegacyIdentity(legacyName); legacyID == id {
+				legacyPath := filepath.Join(m.logsDir, legacyName)
+				if info, err := os.Lstat(legacyPath); err == nil && info.Mode().IsRegular() {
+					return legacyPath, true
+				}
+			}
+		}
+	}
+	return path, true
 }
 
 // Install publishes a validated package and records it as disabled.
@@ -229,6 +248,7 @@ func (m *Manager) Install(ctx context.Context, pkg *bundle.Bundle) (View, error)
 		Enabled:     false,
 		InstalledAt: time.Now().UTC(),
 	}
+	record.SensitiveKeys = sensitiveConfigKeys(record, pkg.Manifest)
 	if err := m.store.InsertPlugin(ctx, record); err != nil {
 		_ = os.RemoveAll(target)
 		return View{}, err
@@ -237,7 +257,7 @@ func (m *Manager) Install(ctx context.Context, pkg *bundle.Bundle) (View, error)
 	state := &state{
 		record:   record,
 		manifest: pkg.Manifest,
-		logPath:  m.logPath(record.ID, record.Version),
+		logPath:  logtail.Path(m.logsDir, record.ID, record.Version),
 		status:   StatusStopped,
 	}
 	m.mu.Lock()
@@ -484,24 +504,32 @@ func (m *Manager) UpdateConfig(ctx context.Context, id string, values map[string
 	}
 	m.mu.Lock()
 	current := copyMap(state.record.Config)
+	sensitiveKeys := sensitiveConfigKeys(state.record, state.manifest)
 	m.mu.Unlock()
 	merged, err := state.manifest.MergeConfig(current, values)
 	if err != nil {
 		return View{}, err
 	}
 	for name := range values {
+		field := state.manifest.Config[name]
+		if !field.Secret {
+			delete(sensitiveKeys, name)
+		} else if _, exists := merged[name]; exists {
+			sensitiveKeys[name] = true
+		}
 		path, _ := merged[name].(string)
-		if state.manifest.Config[name].Format == manifest.ConfigFormatWritableDirectory && path != "" {
+		if field.Format == manifest.ConfigFormatWritableDirectory && path != "" {
 			if err := verifyWritableDirectory(path); err != nil {
 				return View{}, fmt.Errorf("%s：目录无法使用：%w", name, err)
 			}
 		}
 	}
-	if err := m.store.SetConfig(ctx, id, merged); err != nil {
+	if err := m.store.SetConfig(ctx, id, merged, sensitiveKeys); err != nil {
 		return View{}, err
 	}
 	m.mu.Lock()
 	state.record.Config = merged
+	state.record.SensitiveKeys = sensitiveKeys
 	view := m.viewLocked(state)
 	m.mu.Unlock()
 	return view, nil
@@ -737,7 +765,16 @@ func (m *Manager) viewLocked(state *state) View {
 		view.HasNative = state.manifest.Native != nil
 		view.ConfigSchema = state.manifest.Config
 		for name, field := range state.manifest.Config {
-			if value, ok := state.record.Config[name]; ok && !field.Secret {
+			value, ok := state.record.Config[name]
+			if !ok || field.Secret {
+				continue
+			}
+			if state.record.SensitiveKeys[name] {
+				if view.RedactedConfig == nil {
+					view.RedactedConfig = make(map[string]bool)
+				}
+				view.RedactedConfig[name] = true
+			} else {
 				view.Config[name] = value
 			}
 		}
@@ -765,14 +802,21 @@ func (m *Manager) lockFor(id string) *sync.Mutex {
 	return lock
 }
 
-func (m *Manager) logPath(id, version string) string {
-	return filepath.Join(m.logsDir, id+"-"+version+".log")
-}
-
 func copyMap(values map[string]any) map[string]any {
 	result := make(map[string]any, len(values))
 	for key, value := range values {
 		result[key] = value
 	}
 	return result
+}
+
+func sensitiveConfigKeys(record store.Plugin, metadata *manifest.Manifest) map[string]bool {
+	keys := make(map[string]bool, len(record.SensitiveKeys))
+	maps.Copy(keys, record.SensitiveKeys)
+	for _, name := range metadata.SecretKeys() {
+		if _, exists := record.Config[name]; exists {
+			keys[name] = true
+		}
+	}
+	return keys
 }

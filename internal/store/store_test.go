@@ -30,7 +30,7 @@ func TestHostRecordsPersist(t *testing.T) {
 	if err := database.SetEnabled(ctx, record.ID, true); err != nil {
 		t.Fatalf("SetEnabled: %v", err)
 	}
-	if err := database.SetConfig(ctx, record.ID, map[string]any{"greeting": "hello"}); err != nil {
+	if err := database.SetConfig(ctx, record.ID, map[string]any{"greeting": "hello"}, nil); err != nil {
 		t.Fatalf("SetConfig: %v", err)
 	}
 	if err := database.Close(); err != nil {

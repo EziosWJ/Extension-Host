@@ -59,8 +59,25 @@ make examples
 | `ext run <dir\|zip>` | 安装、启用并运行一个插件。 |
 | `ext serve` | 启动宿主和管理控制台。 |
 | `ext version` / `ext --version` | 输出构建版本、提交和构建时间。 |
+| `sudo ext setup-sudo` | 为运行 `ext` 的账号安装托管规则 `/etc/sudoers.d/extension-host`，授予其免密 root。 |
+| `ext check-sudo` | 以当前账号探测免密 root 是否可用，并单独报告托管规则的归属状态。 |
+| `sudo ext remove-sudo` | 移除托管规则；规则不存在时幂等成功。 |
 
 参数可以放在位置参数前后。`ext init` 生成的项目包含 `manifest.json`、`README.md` 和所选模板的运行文件；`backend/`、`go.mod` 和 `Makefile` 仅用于开发，不进入 ZIP。
+
+## 主机权限
+
+独立宿主以启动 `ext` 的 Linux 账号权限运行，已启用插件继承同一权限（[ADR-0001](docs/adr/0001-trusted-plugins-use-host-account-permissions.md)）。唯一需要提权的操作是 `host.services.start/stop/restart` 传入 `{ sudo = true }`；非 root 宿主通过 `sudo -n -k -u root --` 执行，不提示密码，也不复用缓存凭据。
+
+在 Linux + systemd + sudoers 环境下，用以下命令管理授权规则：
+
+```sh
+sudo ext setup-sudo   # 为当前账号安装 /etc/sudoers.d/extension-host
+ext check-sudo        # 探测免密 root，并单独报告规则归属
+sudo ext remove-sudo  # 移除托管规则（幂等）
+```
+
+托管规则授予 `NOPASSWD: ALL`，意味着宿主账号（含全部已启用插件）可无密码取得 root。只应在受信任的主机上初始化，并且不要把未加访问控制的管理控制台暴露到公网。读取服务 journal 日志还要求宿主账号加入 `systemd-journal` 组，与 sudoers 规则相互独立。嵌入 GoDesk 时仍沿用其自有规则（`/etc/sudoers.d/godesk`、`godesk --setup-sudo`）。完整契约见 [docs/privileges.md](docs/privileges.md)。
 
 ## 插件包与 Manifest 概览
 
@@ -108,6 +125,7 @@ handler := extensionHost.Handler(host.HTTPOptions{RequireSession: requireSession
 ## 文档
 
 - [Extension Host 参考手册](docs/host-reference.md)：命令行、包格式、Lua Host API、HTTP 路由、生命周期与存储。
+- [主机权限契约](docs/privileges.md)：运行身份、托管 sudoers 规则命令与安全边界。
 - [原生可执行插件契约](docs/native-plugins.md)：平台、进程协议与本地 Host API。
 - [Lua Host API 增补说明](docs/lua-host-api-minimal-enhancements.md)：进程、文件系统、HTTP、定时任务与事件细节。
 - [插件命名规范与市场化准备 Spec](docs/plugin-naming-and-marketplace-spec.md)：ID、市场元数据与静态 Registry 契约。

@@ -59,8 +59,25 @@ To run an example without opening the console first:
 | `ext run <dir\|zip>` | Install, enable, and serve one plugin. |
 | `ext serve` | Start the host and management console. |
 | `ext version` / `ext --version` | Print the build version, commit, and build date. |
+| `sudo ext setup-sudo` | Install the managed `/etc/sudoers.d/extension-host` rule for the account that runs `ext`, granting it passwordless root. |
+| `ext check-sudo` | Probe passwordless root for the current account and report the managed rule's ownership separately. |
+| `sudo ext remove-sudo` | Remove the managed rule; succeeds when it is already absent. |
 
 Flags may appear before or after positional arguments. `ext init` generates a project with a `manifest.json`, a `README.md`, and only the runtime files for the chosen template; `backend/`, `go.mod`, and `Makefile` are development-only and stay out of the ZIP.
+
+## Host permissions
+
+The standalone host runs with the OS permissions of the account that starts `ext`, and enabled plugins run with those same permissions ([ADR-0001](docs/adr/0001-trusted-plugins-use-host-account-permissions.md)). The only privileged action is `host.services.start/stop/restart` with `{ sudo = true }`; under a non-root host it runs as `sudo -n -k -u root --`, with no password prompt and no cached credentials.
+
+On Linux with systemd and sudoers, manage the rule that enables this:
+
+```sh
+sudo ext setup-sudo   # install /etc/sudoers.d/extension-host for the calling account
+ext check-sudo        # probe passwordless root; report rule ownership separately
+sudo ext remove-sudo  # remove the managed rule (idempotent)
+```
+
+The managed rule grants `NOPASSWD: ALL`, so the host account — and every enabled plugin — can obtain root without a password. Initialize it only on a trusted host, and never expose the console to a public interface without access control. Reading service journal logs additionally requires the host account to be in the `systemd-journal` group, independent of the sudoers rule. Embedded GoDesk deployments keep their own rule (`/etc/sudoers.d/godesk`, `godesk --setup-sudo`). The full contract is in [docs/privileges.md](docs/privileges.md).
 
 ## Package and manifest overview
 
@@ -108,6 +125,7 @@ handler := extensionHost.Handler(host.HTTPOptions{RequireSession: requireSession
 ## Documentation
 
 - [Extension Host reference](docs/host-reference.md) — CLI, package format, Lua Host API, HTTP routes, lifecycle, and storage (currently in Chinese).
+- [Host permissions contract](docs/privileges.md) — runtime identity, managed sudoers rule commands, and security boundaries (currently in Chinese).
 - [Native plugin contract](docs/native-plugins.md) — platforms, process protocol, and local Host API.
 - [Lua Host API enhancements](docs/lua-host-api-minimal-enhancements.md) — process, filesystem, HTTP, schedule, and event details.
 - [Plugin naming and marketplace specification](docs/plugin-naming-and-marketplace-spec.md) — IDs, marketplace metadata, and the static registry schema.

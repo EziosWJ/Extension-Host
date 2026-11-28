@@ -63,6 +63,12 @@ func run(ctx context.Context, args []string) error {
 		return packageProject(args[1:])
 	case "logs":
 		return showLogs(ctx, args[1:], ".", os.Stdout)
+	case "setup-sudo":
+		return setupSudo(ctx, args[1:], os.Stdout)
+	case "check-sudo":
+		return checkSudo(ctx, args[1:], os.Stdout)
+	case "remove-sudo":
+		return removeSudo(ctx, args[1:], os.Stdout)
 	case "help":
 		usage(os.Stdout)
 		return nil
@@ -95,6 +101,9 @@ Usage:
   ext dev [flags]              Run the current project and reload on save
   ext pkg                      Build the current project into dist/
   ext logs [plugin-id] [flags]  Show plugin logs
+  ext setup-sudo               Install the managed sudoers rule (run with sudo)
+  ext check-sudo               Check passwordless sudo and managed rule status
+  ext remove-sudo              Remove the managed sudoers rule (run with sudo)
 
 Serve, run and dev flags:
   --listen string          HTTP listen address (default "127.0.0.1:5001")

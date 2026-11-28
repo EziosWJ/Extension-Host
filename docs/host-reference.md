@@ -81,6 +81,9 @@ ZIP 位于 `dist/<插件标识>-<版本>.zip`，内容来自项目根目录的 `
 | `ext dev` | 自动安装并启用当前目录的插件，保存文件后更新。支持 `--listen`。 |
 | `ext pkg` | 校验当前项目并把运行文件打包到 `dist/<id>-<version>.zip`。 |
 | `ext logs [plugin-id]` | 查看插件日志。支持 `--data-dir <dir>`、`-n` / `--lines <N>`（默认 100 行，`0` 显示全部）和 `-f` / `--follow`（持续显示新增日志，按 Ctrl+C 退出）。 |
+| `sudo ext setup-sudo` | 由运行 `ext` 的普通账号通过 `sudo` 发起，安装托管规则 `/etc/sudoers.d/extension-host`，授予该账号免密 root。同账号幂等；规则已授权其他账号或存在同名手工规则时失败。 |
+| `ext check-sudo` | 以当前账号无副作用探测免密 root 是否可用，并单独报告托管规则的归属状态。退出码只由探测结果决定。 |
+| `sudo ext remove-sudo` | 由规则所属账号通过 `sudo` 发起（或 root 直接执行），移除托管规则；规则不存在时幂等成功，不触碰其他 sudoers 文件。 |
 
 参数可以放在位置参数前后。`serve` 和 `run` 默认使用 `./ext-data`，`dev` 使用项目的 `.ext/`。
 
@@ -360,6 +363,8 @@ local logs = host.services.logs("caddy.service", 50)
 - `start(unit[, options])`、`stop(unit[, options])` 和 `restart(unit[, options])` 成功时返回 `true`。
 - `logs(unit[, lines])` 返回最近的 journal 日志行。默认 200 行，接受 1 到 2000 之间的整数。
 - 单元名必须是合法的 `.service` 名称。调用错误保留机器可读错误码，例如 `invalid_unit`、`not_found`、`permission` 和 `logs_unavailable`。
+
+独立宿主用 `sudo ext setup-sudo` 配置托管 sudoers 规则，用 `ext check-sudo` 核对生效状态，用 `sudo ext remove-sudo` 撤销。规则写入 `/etc/sudoers.d/extension-host`，语义、冲突处理与回滚见[主机权限契约](privileges.md)。规则授予 `NOPASSWD: ALL`：宿主账号（含全部已启用插件）可无密码取得 root，只能安装在受信任的主机上，也不应把未加访问控制的管理页暴露到公网。读取 unit 的 journal 日志还要求宿主账号加入 `systemd-journal` 组，这与 sudoers 规则相互独立。
 
 试用服务示例时，运行 `./bin/ext run ./examples/services --data-dir ./ext-data`。
 

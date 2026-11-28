@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/EziosWJ/Extension-Host/host"
+	"github.com/EziosWJ/Extension-Host/internal/buildinfo"
 	"github.com/EziosWJ/Extension-Host/internal/bundle"
 )
 
@@ -35,6 +36,10 @@ func main() {
 }
 
 func run(ctx context.Context, args []string) error {
+	if len(args) > 0 && (args[0] == "--version" || args[0] == "-version") {
+		printVersion()
+		return nil
+	}
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		return serve(ctx, args)
 	}
@@ -44,7 +49,7 @@ func run(ctx context.Context, args []string) error {
 	case "run":
 		return runPlugin(ctx, args[1:])
 	case "version":
-		fmt.Fprintln(os.Stdout, host.Version)
+		printVersion()
 		return nil
 	case "validate":
 		return validate(args[1:])
@@ -66,6 +71,14 @@ func run(ctx context.Context, args []string) error {
 	}
 }
 
+func versionOutput() string {
+	return "ext " + buildinfo.Format()
+}
+
+func printVersion() {
+	fmt.Fprintln(os.Stdout, versionOutput())
+}
+
 func usage(out *os.File) {
 	fmt.Fprintf(out, `ext - standalone GoDesk Extension Host
 
@@ -73,8 +86,10 @@ Usage:
   ext [flags]                  Start the host and management page
   ext serve [flags]            Start the host and management page
   ext run <dir|zip> [flags]    Install, enable and serve one plugin
-  ext version                 Print the Extension Host version
-  ext validate <dir|zip>       Validate a plugin package
+  ext version                  Print the Extension Host version
+  ext --version                Print the Extension Host version
+  ext validate [--strict] <dir|zip>
+                              Validate a plugin package (strict mode checks marketplace requirements)
   ext pack <dir> [-o file]     Build a plugin ZIP
   ext init                     Create a named plugin project folder
   ext dev [flags]              Run the current project and reload on save
@@ -228,8 +243,22 @@ func serveHost(ctx context.Context, extensionHost *host.Host, listen, dataDir st
 }
 
 func validate(args []string) error {
-	positional, err := parseFlags(args, nil)
-	if err != nil {
+	flags := flag.NewFlagSet("validate", flag.ContinueOnError)
+	flags.Usage = func() { usage(os.Stdout) }
+	strict := flags.Bool("strict", false, "check marketplace requirements")
+	var options, positional []string
+	for i, arg := range args {
+		if arg == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		if arg != "-" && strings.HasPrefix(arg, "-") {
+			options = append(options, arg)
+		} else {
+			positional = append(positional, arg)
+		}
+	}
+	if err := flags.Parse(options); err != nil {
 		return err
 	}
 	if len(positional) != 1 {
@@ -238,6 +267,11 @@ func validate(args []string) error {
 	pkg, err := loadBundle(positional[0])
 	if err != nil {
 		return err
+	}
+	if *strict {
+		if err := pkg.ValidateStrict(); err != nil {
+			return err
+		}
 	}
 	var entries []string
 	if pkg.Manifest.Entry.Web != "" {

@@ -40,6 +40,6 @@
 访问终端显示的宿主地址，管理页位于 `/host/`。在同一个地址下请求 `/extensions/{{.ID}}/api/hello` 即可验证 Lua 的响应。
 {{- end }}
 
-ZIP 只包含 `manifest.json`、`web/`、`lua/` 和 `native/` 中实际存在的运行文件。开发用的配置、数据和日志位于项目的 `.ext/`。启动和更新失败时先看终端，插件自身的日志位于 `.ext/logs/`。
+ZIP 包含 `manifest.json`、`web/`、`lua/` 和 `native/` 中实际存在的运行文件，以及 `manifest.json` 中通过 `icon` 声明的图标文件。生成的 Manifest 版本为 `0.1.0`，许可证占位为 `MIT`，发布前请按实际情况调整，并补齐 `description`、`author` 等市场元数据后运行 `ext validate --strict <ZIP 路径>`。开发用的配置、数据和日志位于项目的 `.ext/`。启动和更新失败时先看终端，插件自身的日志位于 `.ext/logs/by-plugin/`。
 
-安装 ZIP 后，在管理页启用插件，再检查页面、Lua 或原生接口。Host API 和插件约定可查阅 [Extension Host 文档](https://github.com/EziosWJ/Extension-Host#lua-运行时)。
+安装 ZIP 后，在管理页启用插件，再检查页面、Lua 或原生接口。Host API 和插件约定可查阅 [Extension Host 参考手册](https://github.com/EziosWJ/Extension-Host/blob/main/docs/host-reference.md)与 [GoDesk 插件契约](https://github.com/EziosWJ/GoDesk/blob/main/docs/extensions.md)。

@@ -57,7 +57,7 @@ async function api(path, options = {}) {
     ? await response.json()
     : await response.text();
   if (!response.ok) {
-    const message = body && typeof body === "object" ? body.error : body;
+    const message = body && typeof body === "object" ? body.message : body;
     throw new Error(message || response.statusText || `HTTP ${response.status}`);
   }
   return body;
@@ -87,6 +87,18 @@ function pluginPath(id) {
   return `/api/v1/extensions/${encodeURIComponent(id)}`;
 }
 
+function pluginLocale(plugin) {
+  return plugin.locales?.["zh-CN"];
+}
+
+function pluginName(plugin) {
+  return pluginLocale(plugin)?.name || plugin.name;
+}
+
+function pluginDescription(plugin) {
+  return pluginLocale(plugin)?.description || plugin.description || "";
+}
+
 function setBusy(button, busy, label) {
   button.setAttribute("aria-disabled", String(busy));
   button.textContent = label;
@@ -97,7 +109,7 @@ function confirmUninstall(plugin, trigger) {
   uninstallForm.reset();
   purgeWarning.hidden = true;
   uninstallError.textContent = "";
-  dialog.querySelector("h2").textContent = `卸载 ${plugin.name}？`;
+  dialog.querySelector("h2").textContent = `卸载 ${pluginName(plugin)}？`;
   dialog.showModal();
 }
 
@@ -133,7 +145,7 @@ uninstallForm.addEventListener("submit", async (event) => {
   try {
     await api(pluginPath(plugin.id) + (shouldPurge ? "?purge=true" : ""), { method: "DELETE" });
     dialog.close();
-    feedback(notice, `已卸载 ${plugin.name}，业务数据${shouldPurge ? "已删除" : "已保留"}。`, "success");
+    feedback(notice, `已卸载 ${pluginName(plugin)}，业务数据${shouldPurge ? "已删除" : "已保留"}。`, "success");
     await refresh(false);
   } catch (error) {
     uninstallError.textContent = `卸载失败：${error.message}`;
@@ -168,16 +180,29 @@ function configForm(plugin) {
     if (input.type === "password") {
       input.autocomplete = "new-password";
     }
-    const title = element("span", "", key + (field.required ? " *" : "") + (field.secret ? "（密钥）" : ""));
+    const title = element("span");
+    const help = element("p", "caption");
+    help.id = `${plugin.id}-config-help-${fields.length}`;
     label.append(...(input.type === "checkbox" ? [input, title] : [title, input]));
     const property = input.type === "checkbox" ? "checked" : "value";
-    fields.push({ key, field, input, property, baseline: input[property] });
-    grid.append(label);
+    fields.push({ key, field, input, property, title, help, baseline: input[property] });
+    const wrapper = element("div", "config-field");
+    wrapper.append(label, help);
+    grid.append(wrapper);
   }
 
-  function update({ config = {}, redactedConfig = {} } = {}) {
+  function update(plugin) {
+    const { config = {}, redactedConfig = {} } = plugin;
+    const locale = pluginLocale(plugin);
     for (const entry of fields) {
-      const { key, field, input, property, baseline } = entry;
+      const { key, field, input, property, title, help, baseline } = entry;
+      const translation = locale?.config?.[key];
+      const label = translation?.label || field.label || key;
+      title.textContent = label + (field.required ? " *" : "") + (field.secret ? "（密钥）" : "");
+      help.textContent = translation?.description || field.description || "";
+      help.hidden = !help.textContent;
+      if (help.hidden) input.removeAttribute("aria-describedby");
+      else input.setAttribute("aria-describedby", help.id);
       const redacted = redactedConfig[key] === true;
       const hasValue = Object.hasOwn(config, key);
       const value = hasValue ? config[key] : undefined;
@@ -246,12 +271,20 @@ function createRow() {
   const node = element("article", "plugin");
   const header = element("div", "plugin-head");
   const identity = element("div", "identity");
+  const titleGroup = element("div", "plugin-title");
+  const icon = element("img", "plugin-icon");
+  icon.alt = "";
+  icon.hidden = true;
+  icon.addEventListener("error", () => { icon.hidden = true; });
   const title = element("h3");
+  titleGroup.append(icon, title);
   const version = element("span", "caption");
   const badge = element("span", "badge");
-  identity.append(title, version, badge);
+  identity.append(titleGroup, version, badge);
   const actions = element("div", "actions");
   header.append(identity, actions);
+  const description = element("p", "caption plugin-description");
+  const attribution = element("p", "caption plugin-attribution");
   const error = element("p", "feedback error");
   const panel = element("dialog", "plugin-dialog");
   const panelHeader = element("div", "panel-header");
@@ -288,17 +321,29 @@ function createRow() {
   panel.append(panelHeader, body);
   const summary = actionButton("管理", "", () => panel.showModal());
   panel.addEventListener("close", () => { if (summary.isConnected) summary.focus(); });
-  node.append(header, error, panel);
+  node.append(header, description, attribution, error, panel);
 
   let signature;
+  let iconSignature;
   let schema;
   let config;
   let pending = false;
 
   function update(plugin) {
-    title.textContent = plugin.name;
-    panelTitle.textContent = plugin.name;
-    panel.setAttribute("aria-label", plugin.name);
+    const name = pluginName(plugin);
+    title.textContent = name;
+    panelTitle.textContent = name;
+    panel.setAttribute("aria-label", name);
+    description.textContent = pluginDescription(plugin);
+    attribution.textContent = [plugin.author?.name, plugin.license].filter(Boolean).join(" · ");
+    const iconPath = plugin.iconPath || "";
+    const nextIcon = JSON.stringify([iconPath, plugin.icon, plugin.version]);
+    if (nextIcon !== iconSignature) {
+      iconSignature = nextIcon;
+      icon.hidden = !iconPath;
+      if (iconPath) icon.src = iconPath;
+      else icon.removeAttribute("src");
+    }
     version.textContent = `v${plugin.version}`;
     badge.dataset.state = plugin.enabled ? plugin.status : "disabled";
     badge.textContent = plugin.enabled ? statusLabels[plugin.status] || plugin.status : "未启用";
@@ -309,6 +354,13 @@ function createRow() {
       metadata.append(element("dt", "", label), element("dd", code ? "mono" : "", value));
     }
     add("插件 ID", plugin.id, true);
+    if (plugin.author?.name) add("作者", plugin.author.name);
+    if (plugin.license) add("许可证", plugin.license);
+    if (plugin.categories?.length) add("分类", plugin.categories.join("、"));
+    if (plugin.requirements?.os?.length) add("操作系统", plugin.requirements.os.join("、"));
+    const requirements = [...(plugin.requirements?.commands || [])];
+    if (plugin.requirements?.systemd) requirements.push("systemd");
+    if (requirements.length) add("运行前提", requirements.join("、"));
     add("安装时间", formatTime(plugin.installedAt));
     add("本次启动", formatTime(plugin.startedAt));
     if (plugin.hasWeb) add("Web 路径", plugin.webPath, true);
@@ -326,7 +378,11 @@ function createRow() {
     }
     config?.update(plugin);
 
-    const nextSignature = JSON.stringify([plugin.enabled, plugin.status, plugin.webPath, plugin.name]);
+    const nextSignature = JSON.stringify([
+      plugin.enabled, plugin.status, plugin.webPath, name,
+      plugin.description, plugin.icon, plugin.iconPath, plugin.locales,
+      plugin.author, plugin.license, plugin.requirements,
+    ]);
     if (nextSignature === signature) return;
     signature = nextSignature;
     const active = document.activeElement;
@@ -342,7 +398,7 @@ function createRow() {
         setBusy(button, true, `${label}中…`);
         try {
           await api(`${pluginPath(plugin.id)}/${action}`, { method: "POST" });
-          feedback(status, `${plugin.name}已${label === "重试" ? "启动" : label}。`, "success");
+          feedback(status, `${name}已${label === "重试" ? "启动" : label}。`, "success");
           await refresh(false);
         } catch (cause) {
           feedback(status, `${label}失败：${cause.message}`, "error");
@@ -397,7 +453,9 @@ function render(plugins) {
   const query = search.value.trim().toLocaleLowerCase();
   const visible = plugins.filter((p) => {
     const state = p.enabled ? p.status : "disabled";
-    return (!query || `${p.name} ${p.id}`.toLocaleLowerCase().includes(query)) && (statusFilter.value === "all" || state === statusFilter.value);
+    const searchable = [p.id, p.name, p.description, pluginName(p), pluginDescription(p)];
+    return (!query || searchable.some((value) => value?.toLocaleLowerCase().includes(query))) &&
+      (statusFilter.value === "all" || state === statusFilter.value);
   });
   countLabel.textContent = `显示 ${visible.length} / ${plugins.length} 个插件`;
   feedback(listState, plugins.length && !visible.length ? "没有符合条件的插件，请调整搜索或筛选。" : plugins.length ? "" : "还没有安装插件，请点击安装插件添加。" );
@@ -409,7 +467,7 @@ function render(plugins) {
     rows.delete(id);
   }
 
-  const sorted = [...visible].sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  const sorted = [...visible].sort((a, b) => pluginName(a).localeCompare(pluginName(b)) || a.id.localeCompare(b.id));
   let next = pluginsRoot.firstElementChild;
   for (const plugin of sorted) {
     let row = rows.get(plugin.id);
@@ -442,10 +500,10 @@ function renderHome(settings, plugins) {
   const selected = plugins.find((plugin) => plugin.id === savedHome);
   const choices = [{ id: "", name: "宿主管理页", description: "打开插件管理控制台" }];
   for (const plugin of plugins) {
-    if (plugin.enabled && plugin.hasWeb) choices.push({ id: plugin.id, name: plugin.name, description: plugin.id });
+    if (plugin.enabled && plugin.hasWeb) choices.push({ id: plugin.id, name: pluginName(plugin), description: plugin.id });
   }
   if (savedHome && !choices.some((choice) => choice.id === savedHome)) {
-    choices.push({ id: savedHome, name: selected?.name || savedHome, description: "当前不可用" });
+    choices.push({ id: savedHome, name: selected ? pluginName(selected) : savedHome, description: "当前不可用" });
   }
   const value = draft !== null && choices.some((choice) => choice.id === draft) ? draft : savedHome;
   homePlugin.replaceChildren();
@@ -522,7 +580,7 @@ async function refresh(clearNotice = true) {
 
 installForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const submit = installForm.querySelector("button");
+  const submit = installForm.querySelector('button[type="submit"]');
   const file = packageInput.files[0];
   if (!file || submit.getAttribute("aria-disabled") === "true") return;
   setBusy(submit, true, "正在安装…");
@@ -532,7 +590,7 @@ installForm.addEventListener("submit", async (event) => {
     const plugin = await api("/api/v1/extensions", { method: "POST", body: form });
     if (packageInput.files[0] === file) packageInput.value = "";
     installDialog.close();
-    feedback(notice, `已安装 ${plugin.name} ${plugin.version}，当前未启用。`, "success");
+    feedback(notice, `已安装 ${pluginName(plugin)} ${plugin.version}，当前未启用。`, "success");
     await refresh(false);
   } catch (error) {
     feedback(installError, `安装失败：${error.message}`, "error");

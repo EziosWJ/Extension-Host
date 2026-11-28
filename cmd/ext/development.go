@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"maps"
@@ -24,6 +26,7 @@ import (
 
 	"github.com/EziosWJ/Extension-Host/host"
 	"github.com/EziosWJ/Extension-Host/internal/bundle"
+	"github.com/EziosWJ/Extension-Host/internal/manifest"
 )
 
 type developmentSession struct {
@@ -249,6 +252,37 @@ func projectStamp(project string) (map[string]fileStamp, error) {
 		})
 		if err != nil {
 			return nil, err
+		}
+	}
+	manifestPath := filepath.Join(project, "manifest.json")
+	if info, ok := stamp[manifestPath]; ok && info.mode.IsRegular() {
+		root, err := os.OpenRoot(project)
+		if err != nil {
+			return nil, err
+		}
+		defer root.Close()
+		file, err := root.Open("manifest.json")
+		if errors.Is(err, fs.ErrNotExist) {
+			return stamp, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		var metadata struct{ Icon string }
+		err = json.NewDecoder(io.LimitReader(file, 1<<20)).Decode(&metadata)
+		file.Close()
+		// Keep watching manifest edits even when its current contents are invalid.
+		if err == nil && manifest.ValidPackagePath(metadata.Icon) {
+			name := filepath.FromSlash(metadata.Icon)
+			path := filepath.Join(project, name)
+			if _, watched := stamp[path]; !watched {
+				info, err := root.Lstat(name)
+				if err == nil {
+					stamp[path] = fileStamp{info.Mode(), info.Size(), info.ModTime()}
+				} else if !errors.Is(err, fs.ErrNotExist) {
+					return nil, err
+				}
+			}
 		}
 	}
 	return stamp, nil

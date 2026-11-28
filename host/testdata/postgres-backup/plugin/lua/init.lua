@@ -55,7 +55,7 @@ local function public_source(source)
 end
 
 local function backup_directory()
-  local path = host.config.get("备份目录")
+  local path = host.config.get("backupDir")
   return path and path ~= "" and path or host.dataDir
 end
 
@@ -214,7 +214,7 @@ local function busy(source, database)
       { source, database, source, database }) then
     return "该数据库已有任务在运行。"
   end
-  if running.total >= (host.config.get("并行任务上限") or 2) then return "已达到并行任务上限。" end
+  if running.total >= (host.config.get("maxParallelTasks") or 2) then return "已达到并行任务上限。" end
 end
 
 local function finish_backup(id, status, err)
@@ -423,46 +423,6 @@ route("POST", "/restore-action", function(input)
   return response(202, { id = job.id })
 end)
 
-local function migrate_backups()
-  local columns = {}
-  for _, column in ipairs(storage.query("PRAGMA table_info(backups)")) do
-    columns[column.name] = true
-  end
-  for _, name in ipairs({ "source_id", "database_name", "schedule_id", "trigger", "archive_path", "finished_at" }) do
-    if not columns[name] then
-      storage.exec("ALTER TABLE backups ADD COLUMN " .. name .. " TEXT NOT NULL DEFAULT ''")
-    end
-  end
-
-  if storage.get("legacy-migrated") then return end
-
-  local connection = storage.get("connection")
-  local expression = storage.get("schedule")
-  local source
-  if connection then
-    local old = host.json.decode(connection)
-    old.name = "原有连接"
-    source = normalize_source(old)
-  elseif expression or not columns.archive_path then
-    local service = os.getenv("PGSERVICE")
-    if pg.text(service) then source = normalize_source({ name = service, service = service }) end
-  end
-  if source then
-    source.id = "legacy-connection"
-    save_source(source)
-    if expression and expression ~= "" then
-      storage.exec([[INSERT OR IGNORE INTO schedules (id, name, source_id, database_name, expression, enabled)
-        VALUES ('legacy-schedule', ?, ?, ?, ?, 1)]], { "定时备份", source.id, source.database, expression })
-    end
-  end
-  for _, job in ipairs(storage.query("SELECT id, file_name FROM backups WHERE trigger = ''")) do
-    local filename = job.file_name or (job.id .. ".dump")
-    storage.exec("UPDATE backups SET archive_path = ?, trigger = 'legacy' WHERE id = ?",
-      { join(host.dataDir, filename), job.id })
-  end
-  storage.set("legacy-migrated", true)
-end
-
 host.app.on("start", function()
   storage.exec("CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, definition TEXT NOT NULL)")
   storage.exec([[CREATE TABLE IF NOT EXISTS schedules (id TEXT PRIMARY KEY, name TEXT NOT NULL, source_id TEXT NOT NULL,
@@ -481,7 +441,6 @@ host.app.on("start", function()
     source_id TEXT NOT NULL DEFAULT '', database_name TEXT NOT NULL DEFAULT '', schedule_id TEXT NOT NULL DEFAULT '',
     trigger TEXT NOT NULL DEFAULT '', archive_path TEXT NOT NULL DEFAULT '', finished_at TEXT NOT NULL DEFAULT ''
   )]])
-  migrate_backups()
   for _, job in ipairs(storage.query("SELECT id, archive_path FROM backups WHERE status = 'running'")) do
     if is_file(job.archive_path) then
       finish_backup(job.id, "succeeded")

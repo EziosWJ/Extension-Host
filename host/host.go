@@ -76,6 +76,17 @@ type HTTPOptions struct {
 
 // Plugin is the management view of an installed plugin.
 type Plugin struct {
+	Description  string                 `json:"description,omitempty"`
+	Author       *Author                `json:"author,omitempty"`
+	License      string                 `json:"license,omitempty"`
+	Homepage     string                 `json:"homepage,omitempty"`
+	Repository   string                 `json:"repository,omitempty"`
+	Icon         string                 `json:"icon,omitempty"`
+	IconPath     string                 `json:"iconPath,omitempty"`
+	Categories   []string               `json:"categories,omitempty"`
+	Keywords     []string               `json:"keywords,omitempty"`
+	Requirements *Requirements          `json:"requirements,omitempty"`
+	Locales      map[string]Locale      `json:"locales,omitempty"`
 	ID           string                 `json:"id"`
 	Name         string                 `json:"name"`
 	Version      string                 `json:"version"`
@@ -99,11 +110,28 @@ type Plugin struct {
 
 // ConfigField describes one configuration value.
 type ConfigField struct {
-	Type     string `json:"type"`
-	Required bool   `json:"required,omitempty"`
-	Secret   bool   `json:"secret,omitempty"`
-	Default  any    `json:"default,omitempty"`
+	Type        string   `json:"type"`
+	Required    bool     `json:"required,omitempty"`
+	Secret      bool     `json:"secret,omitempty"`
+	Default     any      `json:"default,omitempty"`
+	Format      string   `json:"format,omitempty"`
+	Min         *float64 `json:"min,omitempty"`
+	Max         *float64 `json:"max,omitempty"`
+	Label       string   `json:"label,omitempty"`
+	Description string   `json:"description,omitempty"`
 }
+
+// Author identifies the plugin publisher or maintainer.
+type Author = manifest.Author
+
+// Requirements describes non-enforcing environment hints.
+type Requirements = manifest.Requirements
+
+// Locale provides translated plugin and configuration text.
+type Locale = manifest.Locale
+
+// ConfigLocale provides translated text for a configuration field.
+type ConfigLocale = manifest.ConfigLocale
 
 // UninstallOptions controls uninstall behaviour.
 type UninstallOptions struct {
@@ -288,6 +316,17 @@ func (h *Host) Close(ctx context.Context) error {
 
 func pluginFromView(view lifecycle.View) Plugin {
 	plugin := Plugin{
+		Description:    view.Description,
+		Author:         view.Author,
+		License:        view.License,
+		Homepage:       view.Homepage,
+		Repository:     view.Repository,
+		Icon:           view.Icon,
+		IconPath:       view.IconPath,
+		Categories:     view.Categories,
+		Keywords:       view.Keywords,
+		Requirements:   view.Requirements,
+		Locales:        view.Locales,
 		ID:             view.ID,
 		Name:           view.Name,
 		Version:        view.Version,
@@ -311,12 +350,24 @@ func pluginFromView(view lifecycle.View) Plugin {
 		for name, field := range view.ConfigSchema {
 			defaultValue, _ := field.DefaultValue()
 			plugin.ConfigSchema[name] = ConfigField{
-				Type:     field.Type,
-				Required: field.Required,
-				Secret:   field.Secret,
-				Default:  defaultValue,
+				Type:        field.Type,
+				Required:    field.Required,
+				Secret:      field.Secret,
+				Default:     defaultValue,
+				Format:      field.Format,
+				Min:         copyBound(field.Min),
+				Max:         copyBound(field.Max),
+				Label:       field.Label,
+				Description: field.Description,
 			}
 		}
 	}
 	return plugin
+}
+
+func copyBound(bound *float64) *float64 {
+	if bound == nil {
+		return nil
+	}
+	return new(*bound)
 }

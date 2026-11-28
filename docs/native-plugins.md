@@ -12,7 +12,7 @@
   "id": "com.example.worker",
   "name": "Worker",
   "version": "0.1.0",
-  "minHostVersion": "0.3.0",
+  "minHostVersion": "0.1.0",
   "hostApi": {"min": 1, "max": 1},
   "entry": {"native": "native/worker", "web": "web/index.html"},
   "native": {
@@ -26,7 +26,7 @@
 - `entry.native` 是 `native/` 下的相对路径。一个包选用一个后端入口，原生入口可以单独使用或搭配 `entry.web`。在原生包中，网页放在 `web/`。
 - `native.platform` 必填。 `native.exports` 和 `native.webApi` 可省略，分别默认空列表和 `false`。方法名使用点分隔的字母数字和下划线，例如 `v1.getStatus`。
 - `minHostVersion` 对原生包必填，按语义化版本比较，比较对象是 Extension Host 版本，可用 `ext version` 查看独立宿主版本。运行 GoDesk 时也使用实际嵌入的 Extension Host 版本。它与 `schemaVersion` 和 `hostApi` 分别描述发布版本、包结构与协议兼容性。
-- `pkg` 收集 `manifest.json`、`native/` 和声明的网页运行文件。默认产物名是 `dist/<id>-<version>-<platform>.zip`。包内只有声明的二进制入口会被赋予执行位。常规 ZIP 路径、符号链接和大小限制同样适用。
+- `pkg` 收集 `manifest.json`、`native/`、声明的网页运行文件，以及 `manifest.json` 中通过 `icon` 声明的图标文件（`.svg`/`.png`/`.webp`，`<= 256 KiB`；`ext dev` 也会监听该图标文件变动）。默认产物名是 `dist/<id>-<version>-<platform>.zip`。包内只有声明的二进制入口会被赋予执行位。常规 ZIP 路径、符号链接和大小限制同样适用。
 - `ext init` 的「网页 + 原生后端」和「只有原生后端」模板提供 Go 起始代码：源码位于 `backend/`，`make build` 输出到 `native/plugin`。`backend/`、`go.mod` 和 `Makefile` 不进入 ZIP。
 
 从包含上述 Manifest 的项目目录执行以下命令。此处以 Go 的 ARM64 构建为例，其他语言只要在同一路径产出目标 ELF 即可。
@@ -37,6 +37,8 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o native/worker ./cmd/worker
 ext pkg
 ext validate dist/com.example.worker-0.1.0-linux-arm64.zip
 ```
+
+若要校验是否满足市场准入条件（需使用自有反向域名 ID 并补齐必填市场元数据，详见 [插件命名规范与市场化准备 Spec](plugin-naming-and-marketplace-spec.md)），可执行 `ext validate --strict <dir|zip>`。
 
 开发机可以验证其他架构的包。运行和安装需要与目标平台匹配的宿主。显式修改 `native/` 中的编译产物后，`ext dev` 会按原有机制更新实例。
 

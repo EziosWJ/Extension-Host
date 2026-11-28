@@ -1,12 +1,52 @@
 {
   "schemaVersion": 1,
-  "id": "com.godesk.hello",
+  "id": "com.example.hello",
   "name": "Hello Extension",
   "version": "0.1.0",
-  "hostApi": { "min": 1, "max": 1 },
-  "entry": { "web": "web/index.html", "lua": "lua/init.lua" },
+  "hostApi": {
+    "min": 1,
+    "max": 1
+  },
+  "entry": {
+    "web": "web/index.html",
+    "lua": "lua/init.lua"
+  },
   "config": {
-    "greeting": { "type": "string", "default": "你好" },
-    "token": { "type": "string", "secret": true }
+    "greeting": {
+      "type": "string",
+      "default": "你好",
+      "label": "Greeting",
+      "description": "Text returned by the greeting endpoint."
+    },
+    "token": {
+      "type": "string",
+      "secret": true,
+      "label": "Token",
+      "description": "Optional secret value used to demonstrate redaction."
+    }
+  },
+  "description": "Demonstrates a web interface backed by Lua APIs and live events.",
+  "author": {
+    "name": "Jian Wang"
+  },
+  "license": "UNLICENSED",
+  "categories": [
+    "utility"
+  ],
+  "locales": {
+    "zh-CN": {
+      "name": "Hello 示例",
+      "description": "演示通过 Lua API 和实时事件驱动的网页界面。",
+      "config": {
+        "greeting": {
+          "label": "问候语",
+          "description": "问候接口返回的文字。"
+        },
+        "token": {
+          "label": "令牌",
+          "description": "用于演示密钥隐藏的可选值。"
+        }
+      }
+    }
   }
 }

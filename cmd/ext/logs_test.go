@@ -17,12 +17,15 @@ func TestShowLogsProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeDevTestFile(t, filepath.Join(dir, "manifest.json"), `{"id":"com.example.project"}`)
-	writeDevTestFile(t, filepath.Join(logDir, "com.example.other-1.0.0.log"), "wrong plugin\n")
+	otherLogs := filepath.Join(logDir, "by-plugin", "com.example.other")
+	if err := os.MkdirAll(otherLogs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeDevTestFile(t, filepath.Join(otherLogs, "1.0.0.log"), "wrong plugin\n")
 	projectLogs := filepath.Join(logDir, "by-plugin", "com.example.project")
 	if err := os.MkdirAll(projectLogs, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeDevTestFile(t, filepath.Join(logDir, "com.example.project-1.0.0.log"), "legacy log\n")
 	writeDevTestFile(t, filepath.Join(projectLogs, "1.0.0.log"), "first\nsecond\nthird\n")
 
 	var out strings.Builder
@@ -38,19 +41,20 @@ func TestShowLogsSelectsLatest(t *testing.T) {
 	dir := t.TempDir()
 	dataDir := filepath.Join(dir, "custom")
 	logDir := filepath.Join(dataDir, "logs")
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	files := []struct {
-		name    string
+		plugin  string
+		version string
 		content string
 	}{
-		{"com.example.plugin-2.0.0.log", "older log\n"},
-		{"com.example.plugin-1.0.0.log", "first\nsecond"},
-		{"com.example.other-1.0.0.log", "wrong plugin\n"},
+		{"com.example.plugin", "2.0.0", "older log\n"},
+		{"com.example.plugin", "1.0.0", "first\nsecond"},
+		{"com.example.other", "1.0.0", "wrong plugin\n"},
 	}
 	for i, file := range files {
-		path := filepath.Join(logDir, file.name)
+		path := filepath.Join(logDir, "by-plugin", file.plugin, file.version+".log")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
 		writeDevTestFile(t, path, file.content)
 		modified := time.Unix(int64(i)+1, 0)
 		if err := os.Chtimes(path, modified, modified); err != nil {
@@ -69,13 +73,13 @@ func TestShowLogsSelectsLatest(t *testing.T) {
 
 func TestShowLogsDefaultTail(t *testing.T) {
 	dir := t.TempDir()
-	logDir := filepath.Join(dir, "ext-data", "logs")
+	logDir := filepath.Join(dir, "ext-data", "logs", "by-plugin", "project")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	// The last line is unterminated and crosses a reverse-read block.
 	want := strings.Repeat("line\n", 99) + strings.Repeat("x", 64*1024)
-	writeDevTestFile(t, filepath.Join(logDir, "project-1.0.0.log"), "excluded\n"+want)
+	writeDevTestFile(t, filepath.Join(logDir, "1.0.0.log"), "excluded\n"+want)
 	var out strings.Builder
 	if err := showLogs(t.Context(), nil, dir, &out); err != nil {
 		t.Fatal(err)
@@ -87,11 +91,11 @@ func TestShowLogsDefaultTail(t *testing.T) {
 
 func TestShowLogsFollow(t *testing.T) {
 	dir := t.TempDir()
-	logDir := filepath.Join(dir, "ext-data", "logs")
+	logDir := filepath.Join(dir, "ext-data", "logs", "by-plugin", "project")
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(logDir, "project-1.0.0.log")
+	path := filepath.Join(logDir, "1.0.0.log")
 	writeDevTestFile(t, path, "skipped\ninitial\n")
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -144,28 +148,16 @@ func TestShowLogsFollow(t *testing.T) {
 	}
 	expectOutput(rotated)
 
-	nestedDir := filepath.Join(logDir, "by-plugin", "project")
-	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	nestedPath := filepath.Join(nestedDir, "1.0.0.log")
-	const restarted = "restart line one\nrestart line two\n"
-	writeDevTestFile(t, replacement, restarted)
-	if err := os.Rename(replacement, nestedPath); err != nil {
-		t.Fatal(err)
-	}
-	expectOutput(restarted)
-
-	file, err = os.OpenFile(nestedPath, os.O_WRONLY|os.O_APPEND, 0)
+	file, err = os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, writeErr = file.WriteString("appended after restart\n")
+	_, writeErr = file.WriteString("appended after rotation\n")
 	closeErr = file.Close()
 	if writeErr != nil || closeErr != nil {
-		t.Fatalf("append nested log: write %v, close %v", writeErr, closeErr)
+		t.Fatalf("append rotated log: write %v, close %v", writeErr, closeErr)
 	}
-	expectOutput("appended after restart\n")
+	expectOutput("appended after rotation\n")
 
 	cancel()
 	select {
@@ -207,11 +199,13 @@ func TestShowLogsErrors(t *testing.T) {
 	}
 
 	logDir := filepath.Join(dir, "ext-data", "logs")
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
-		t.Fatal(err)
+	for _, id := range []string{"first", "second"} {
+		pluginDir := filepath.Join(logDir, "by-plugin", id)
+		if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeDevTestFile(t, filepath.Join(pluginDir, "1.0.0.log"), "")
 	}
-	writeDevTestFile(t, filepath.Join(logDir, "first-1.0.0.log"), "")
-	writeDevTestFile(t, filepath.Join(logDir, "second-1.0.0.log"), "")
 	err := showLogs(t.Context(), nil, dir, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "specify plugin-id") {
 		t.Fatalf("error = %v, want a prompt to specify plugin-id", err)

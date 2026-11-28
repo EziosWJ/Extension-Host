@@ -74,6 +74,7 @@ func New(manager *lifecycle.Manager, logger *slog.Logger, opts Options) http.Han
 	mux.HandleFunc("DELETE /api/v1/extensions/{id}", gateway.uninstall)
 	mux.HandleFunc("PUT /api/v1/extensions/{id}/config", gateway.updateConfig)
 
+	mux.HandleFunc("GET /extensions/{id}/icon", gateway.icon)
 	mux.HandleFunc("GET /extensions/{id}/web", gateway.redirectWeb)
 	mux.HandleFunc("GET /extensions/{id}/web/", gateway.web)
 	mux.HandleFunc("/extensions/{id}/api", gateway.api)
@@ -97,7 +98,7 @@ func (g *Gateway) list(w http.ResponseWriter, r *http.Request) {
 func (g *Gateway) get(w http.ResponseWriter, r *http.Request) {
 	view, ok := g.manager.Get(r.PathValue("id"))
 	if !ok {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("%v: %s", lifecycle.ErrNotFound, r.PathValue("id")))
+		writeCodedError(w, http.StatusNotFound, "not_found", fmt.Sprintf("%v: %s", lifecycle.ErrNotFound, r.PathValue("id")))
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -134,7 +135,7 @@ func (g *Gateway) publishPackage(w http.ResponseWriter, r *http.Request, status 
 	view, err := publish(ctx, pkg)
 	if errors.Is(err, lifecycle.ErrConflict) {
 		writeJSON(w, http.StatusConflict, map[string]string{
-			"code": "already_installed", "message": err.Error(), "error": err.Error(), "pluginId": pkg.Manifest.ID,
+			"code": "already_installed", "message": err.Error(), "pluginId": pkg.Manifest.ID,
 		})
 		return
 	}
@@ -171,7 +172,7 @@ func (g *Gateway) lifecycleAction(w http.ResponseWriter, r *http.Request, action
 	}
 	view, ok := g.manager.Get(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("%v: %s", lifecycle.ErrNotFound, id))
+		writeCodedError(w, http.StatusNotFound, "not_found", fmt.Sprintf("%v: %s", lifecycle.ErrNotFound, id))
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -195,7 +196,7 @@ func (g *Gateway) updateConfig(w http.ResponseWriter, r *http.Request) {
 	var values map[string]any
 	decoder := json.NewDecoder(body)
 	if err := decoder.Decode(&values); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		writeCodedError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body: "+err.Error())
 		return
 	}
 	if values == nil {
@@ -207,10 +208,63 @@ func (g *Gateway) updateConfig(w http.ResponseWriter, r *http.Request) {
 			g.fail(w, err)
 			return
 		}
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeCodedError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
+}
+
+func (g *Gateway) icon(w http.ResponseWriter, r *http.Request) {
+	dir, name, err := g.manager.IconInfo(r.PathValue("id"))
+	if err != nil {
+		g.fail(w, err)
+		return
+	}
+	local := filepath.FromSlash(name)
+	if !withinDir(dir, filepath.Join(dir, local)) {
+		writeCodedError(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		writeCodedError(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+	defer root.Close()
+	info, err := root.Lstat(local)
+	if err != nil || !info.Mode().IsRegular() {
+		writeCodedError(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+	file, err := root.Open(local)
+	if err != nil {
+		writeCodedError(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+	defer file.Close()
+	info, err = file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		writeCodedError(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+
+	var contentType string
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".svg":
+		contentType = "image/svg+xml"
+		w.Header().Set("Content-Security-Policy", "sandbox")
+	case ".png":
+		contentType = "image/png"
+	case ".webp":
+		contentType = "image/webp"
+	default:
+		writeCodedError(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	http.ServeContent(w, r, filepath.Base(name), info.ModTime(), file)
 }
 
 func (g *Gateway) redirectWeb(w http.ResponseWriter, r *http.Request) {
@@ -243,12 +297,12 @@ func (g *Gateway) web(w http.ResponseWriter, r *http.Request) {
 	}
 	target := filepath.Join(dir, filepath.FromSlash(clean))
 	if !withinDir(dir, target) {
-		writeError(w, http.StatusNotFound, "not found")
+		writeCodedError(w, http.StatusNotFound, "not_found", "not found")
 		return
 	}
 	info, err := os.Stat(target)
 	if err != nil || !info.Mode().IsRegular() {
-		writeError(w, http.StatusNotFound, "not found")
+		writeCodedError(w, http.StatusNotFound, "not_found", "not found")
 		return
 	}
 	w.Header().Set("Cache-Control", "no-cache")
@@ -266,7 +320,7 @@ func (g *Gateway) web(w http.ResponseWriter, r *http.Request) {
 func serveDevelopmentHTML(w http.ResponseWriter, r *http.Request, target, revision string) {
 	page, err := os.ReadFile(target)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "not found")
+		writeCodedError(w, http.StatusNotFound, "not_found", "not found")
 		return
 	}
 	script := []byte("<script defer src=\"/__godesk_dev/reload.js\" data-revision=\"" + html.EscapeString(revision) + "\"></script>")
@@ -295,7 +349,7 @@ func (g *Gateway) api(w http.ResponseWriter, r *http.Request) {
 	}
 	if process := instance.Native(); process != nil {
 		if r.ContentLength > maxRequestBody {
-			writeError(w, http.StatusRequestEntityTooLarge, "request body is too large")
+			writeCodedError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body is too large")
 			return
 		}
 		// Remove the mount prefix while preserving encoded path components.
@@ -314,7 +368,7 @@ func (g *Gateway) api(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
 	if err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, "request body is too large")
+		writeCodedError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body is too large")
 		return
 	}
 	headers := make(map[string]string, len(r.Header))
@@ -342,7 +396,7 @@ func (g *Gateway) api(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "plugin handler failed: "+err.Error())
+		writeCodedError(w, http.StatusInternalServerError, "internal_error", "plugin handler failed: "+err.Error())
 		return
 	}
 	for name, value := range response.Headers {
@@ -419,7 +473,7 @@ func (g *Gateway) fail(w http.ResponseWriter, err error) {
 		status, code = http.StatusBadRequest, "incompatible_package"
 	case errors.Is(err, lifecycle.ErrIDMismatch):
 		status, code = http.StatusBadRequest, "id_mismatch"
-	case errors.Is(err, lifecycle.ErrNotFound), errors.Is(err, lifecycle.ErrNoLua), errors.Is(err, lifecycle.ErrNoWeb):
+	case errors.Is(err, lifecycle.ErrNotFound), errors.Is(err, lifecycle.ErrNoLua), errors.Is(err, lifecycle.ErrNoWeb), errors.Is(err, lifecycle.ErrNoIcon):
 		status, code = http.StatusNotFound, "not_found"
 	case errors.Is(err, lifecycle.ErrNotEnabled), errors.Is(err, lifecycle.ErrNotRunning), errors.Is(err, lua.ErrStopped):
 		status, code = http.StatusConflict, "conflict"
@@ -495,12 +549,8 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"error": message})
-}
-
 func writeCodedError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]string{"code": code, "message": message, "error": message})
+	writeJSON(w, status, map[string]string{"code": code, "message": message})
 }
 
 func withinDir(root, name string) bool {

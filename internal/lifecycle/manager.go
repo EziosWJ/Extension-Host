@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -35,6 +36,17 @@ const (
 
 // View is the management-facing snapshot of one plugin.
 type View struct {
+	Description  string                          `json:"description,omitempty"`
+	Author       *manifest.Author                `json:"author,omitempty"`
+	License      string                          `json:"license,omitempty"`
+	Homepage     string                          `json:"homepage,omitempty"`
+	Repository   string                          `json:"repository,omitempty"`
+	Icon         string                          `json:"icon,omitempty"`
+	IconPath     string                          `json:"iconPath,omitempty"`
+	Categories   []string                        `json:"categories,omitempty"`
+	Keywords     []string                        `json:"keywords,omitempty"`
+	Requirements *manifest.Requirements          `json:"requirements,omitempty"`
+	Locales      map[string]manifest.Locale      `json:"locales,omitempty"`
 	ID           string                          `json:"id"`
 	Name         string                          `json:"name"`
 	Version      string                          `json:"version"`
@@ -175,24 +187,12 @@ func (m *Manager) Get(id string) (View, bool) {
 // LogPath returns the active package version's readable log path.
 func (m *Manager) LogPath(id string) (string, bool) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	state := m.states[id]
-	m.mu.Unlock()
 	if state == nil {
 		return "", false
 	}
-	path := state.logPath
-	if path != "" {
-		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-			legacyName := id + "-" + filepath.Base(path)
-			if legacyID, _ := logtail.LegacyIdentity(legacyName); legacyID == id {
-				legacyPath := filepath.Join(m.logsDir, legacyName)
-				if info, err := os.Lstat(legacyPath); err == nil && info.Mode().IsRegular() {
-					return legacyPath, true
-				}
-			}
-		}
-	}
-	return path, true
+	return state.logPath, true
 }
 
 // Install publishes a validated package and records it as disabled.
@@ -594,6 +594,20 @@ func (m *Manager) WebInfo(id string) (string, string, error) {
 	return filepath.Join(m.packageDir(state.record), filepath.FromSlash(filepath.Dir(entry))), filepath.Base(entry), nil
 }
 
+// IconInfo returns the package directory and relative icon path of an installed plugin.
+func (m *Manager) IconInfo(id string) (dir string, iconPath string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.states[id]
+	if state == nil {
+		return "", "", fmt.Errorf("%w: %s", ErrNotFound, id)
+	}
+	if state.manifest == nil || state.manifest.Icon == "" {
+		return "", "", fmt.Errorf("%w: %s", ErrNoIcon, id)
+	}
+	return m.packageDir(state.record), state.manifest.Icon, nil
+}
+
 func (m *Manager) state(id string) (*state, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -760,6 +774,32 @@ func (m *Manager) viewLocked(state *state) View {
 		view.StartedAt = &started
 	}
 	if state.manifest != nil {
+		metadata := state.manifest
+		view.Description = metadata.Description
+		view.License = metadata.License
+		view.Homepage = metadata.Homepage
+		view.Repository = metadata.Repository
+		view.Icon = metadata.Icon
+		if view.Icon != "" {
+			view.IconPath = "/extensions/" + view.ID + "/icon"
+		}
+		view.Categories = slices.Clone(metadata.Categories)
+		view.Keywords = slices.Clone(metadata.Keywords)
+		if metadata.Author != nil {
+			author := *metadata.Author
+			view.Author = &author
+		}
+		if metadata.Requirements != nil {
+			requirements := *metadata.Requirements
+			requirements.OS = slices.Clone(requirements.OS)
+			requirements.Commands = slices.Clone(requirements.Commands)
+			view.Requirements = &requirements
+		}
+		view.Locales = maps.Clone(metadata.Locales)
+		for lang, locale := range view.Locales {
+			locale.Config = maps.Clone(locale.Config)
+			view.Locales[lang] = locale
+		}
 		view.HasWeb = state.manifest.Entry.Web != ""
 		view.HasLua = state.manifest.Entry.Lua != ""
 		view.HasNative = state.manifest.Native != nil

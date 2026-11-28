@@ -16,7 +16,7 @@ func TestHostRecordsPersist(t *testing.T) {
 	}
 	installed := time.Now().UTC().Truncate(time.Millisecond)
 	record := Plugin{
-		ID:          "com.godesk.test",
+		ID:          "com.example.test",
 		Name:        "Test",
 		Version:     "1.0.0",
 		Manifest:    []byte(`{"schemaVersion":1}`),

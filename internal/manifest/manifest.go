@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -38,6 +39,65 @@ type Manifest struct {
 	Entry          Entry                  `json:"entry"`
 	Config         map[string]ConfigField `json:"config,omitempty"`
 	Native         *Native                `json:"native,omitempty"`
+	Description    string                 `json:"description,omitempty"`
+	Author         *Author                `json:"author,omitempty"`
+	License        string                 `json:"license,omitempty"`
+	Homepage       string                 `json:"homepage,omitempty"`
+	Repository     string                 `json:"repository,omitempty"`
+	Icon           string                 `json:"icon,omitempty"`
+	Categories     []string               `json:"categories,omitempty"`
+	Keywords       []string               `json:"keywords,omitempty"`
+	Requirements   *Requirements          `json:"requirements,omitempty"`
+	Locales        map[string]Locale      `json:"locales,omitempty"`
+}
+
+// Author identifies the plugin publisher or maintainer.
+type Author struct {
+	Name  string `json:"name"`
+	URL   string `json:"url,omitempty"`
+	Email string `json:"email,omitempty"`
+}
+
+// Requirements describes environment hints for the installer.
+type Requirements struct {
+	OS       []string `json:"os,omitempty"`
+	Commands []string `json:"commands,omitempty"`
+	Systemd  bool     `json:"systemd,omitempty"`
+
+	unknownFields bool
+}
+
+// UnmarshalJSON records unrecognized fields for strict validation and keeps
+// ordinary manifest parsing compatible with additional fields.
+func (r *Requirements) UnmarshalJSON(data []byte) error {
+	type fields Requirements
+	var decoded fields
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	delete(raw, "os")
+	delete(raw, "commands")
+	delete(raw, "systemd")
+	*r = Requirements(decoded)
+	r.unknownFields = len(raw) > 0
+	return nil
+}
+
+// Locale provides translated plugin and configuration text.
+type Locale struct {
+	Name        string                  `json:"name,omitempty"`
+	Description string                  `json:"description,omitempty"`
+	Config      map[string]ConfigLocale `json:"config,omitempty"`
+}
+
+// ConfigLocale provides translated text for a configuration field.
+type ConfigLocale struct {
+	Label       string `json:"label,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // HostAPI is the inclusive range of Host API versions a plugin supports.
@@ -67,13 +127,15 @@ const (
 
 // ConfigField describes one configuration value.
 type ConfigField struct {
-	Type     string          `json:"type"`
-	Required bool            `json:"required,omitempty"`
-	Secret   bool            `json:"secret,omitempty"`
-	Default  json.RawMessage `json:"default,omitempty"`
-	Format   string          `json:"format,omitempty"`
-	Min      *float64        `json:"min,omitempty"`
-	Max      *float64        `json:"max,omitempty"`
+	Type        string          `json:"type"`
+	Required    bool            `json:"required,omitempty"`
+	Secret      bool            `json:"secret,omitempty"`
+	Default     json.RawMessage `json:"default,omitempty"`
+	Format      string          `json:"format,omitempty"`
+	Min         *float64        `json:"min,omitempty"`
+	Max         *float64        `json:"max,omitempty"`
+	Label       string          `json:"label,omitempty"`
+	Description string          `json:"description,omitempty"`
 }
 
 // Parse decodes and validates a manifest.
@@ -137,6 +199,26 @@ func (m *Manifest) validateStructure() error {
 	}
 	if m.MinHostVersion != "" && !validVersion(m.MinHostVersion) {
 		return fmt.Errorf("manifest.json: invalid minHostVersion %q (want semantic version)", m.MinHostVersion)
+	}
+	if m.Icon != "" {
+		if !ValidPackagePath(m.Icon) {
+			return fmt.Errorf("manifest.json: icon %q must be a relative path inside the package", m.Icon)
+		}
+		switch strings.ToLower(path.Ext(m.Icon)) {
+		case ".svg", ".png", ".webp":
+		default:
+			return fmt.Errorf("manifest.json: icon %q must have an .svg, .png or .webp extension", m.Icon)
+		}
+	}
+	for lang, locale := range m.Locales {
+		if strings.TrimSpace(lang) == "" {
+			return fmt.Errorf("manifest.json: locales contains an empty language code")
+		}
+		for key := range locale.Config {
+			if strings.TrimSpace(key) == "" {
+				return fmt.Errorf("manifest.json: locales[%q].config contains an empty field name", lang)
+			}
+		}
 	}
 	if err := m.validateNative(); err != nil {
 		return err

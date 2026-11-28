@@ -17,7 +17,7 @@ import (
 	"github.com/EziosWJ/Extension-Host/hostsys/services"
 )
 
-const servicesPluginID = "com.godesk.services.test"
+const servicesPluginID = "com.example.services.test"
 
 var servicesAPIPath = "/extensions/" + servicesPluginID + "/api"
 

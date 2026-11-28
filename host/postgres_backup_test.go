@@ -16,14 +16,19 @@ import (
 
 	"github.com/EziosWJ/Extension-Host/host"
 	"github.com/EziosWJ/Extension-Host/internal/bundle"
-	"github.com/EziosWJ/Extension-Host/internal/store"
 )
 
 func installPostgresBackup(t *testing.T, ctx context.Context, extensionHost *host.Host) host.Plugin {
 	t.Helper()
-	pkg, err := bundle.LoadProject(filepath.Join("..", "examples", "postgres-backup", "plugin"))
+	pkg, err := bundle.LoadProject(filepath.Join("testdata", "postgres-backup", "plugin"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if pkg.Manifest.ID != "de.jianwang.postgres-backup" {
+		t.Fatalf("unexpected fixture ID: %s", pkg.Manifest.ID)
+	}
+	if err := pkg.ValidateStrict(); err != nil {
+		t.Fatalf("validate fixture: %v", err)
 	}
 	var manifest map[string]json.RawMessage
 	if err := json.Unmarshal(pkg.Files["manifest.json"], &manifest); err != nil {
@@ -73,8 +78,8 @@ func TestPostgresBackupDirectory(t *testing.T) {
 	configPath := "/api/v1/extensions/" + plugin.ID + "/config"
 	var saved host.Plugin
 	dir := filepath.Join(dataDir, "backup archives", "nested")
-	request(http.MethodPut, configPath, map[string]any{"备份目录": dir, "并行任务上限": 3}, http.StatusOK, &saved)
-	if saved.Status != host.StatusStopped || saved.Config["备份目录"] != dir || saved.Config["并行任务上限"] != float64(3) {
+	request(http.MethodPut, configPath, map[string]any{"backupDir": dir, "maxParallelTasks": 3}, http.StatusOK, &saved)
+	if saved.Status != host.StatusStopped || saved.Config["backupDir"] != dir || saved.Config["maxParallelTasks"] != float64(3) {
 		t.Fatalf("settings saved while stopped = %+v", saved)
 	}
 	files, err := os.ReadDir(dir)
@@ -85,18 +90,18 @@ func TestPostgresBackupDirectory(t *testing.T) {
 	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var problem struct{ Error string }
-	request(http.MethodPut, configPath, map[string]any{"备份目录": filepath.Join(blocker, "invalid"), "并行任务上限": 1}, http.StatusBadRequest, &problem)
-	if !strings.Contains(problem.Error, "目录无法使用") {
-		t.Fatalf("unexpected unusable directory message: %q", problem.Error)
+	var problem struct{ Message string }
+	request(http.MethodPut, configPath, map[string]any{"backupDir": filepath.Join(blocker, "invalid"), "maxParallelTasks": 1}, http.StatusBadRequest, &problem)
+	if !strings.Contains(problem.Message, "目录无法使用") {
+		t.Fatalf("unexpected unusable directory message: %q", problem.Message)
 	}
-	request(http.MethodPut, configPath, map[string]any{"备份目录": "relative"}, http.StatusBadRequest, &problem)
+	request(http.MethodPut, configPath, map[string]any{"backupDir": "relative"}, http.StatusBadRequest, &problem)
 	for _, invalid := range []float64{0, 1.5, 17} {
-		request(http.MethodPut, configPath, map[string]any{"并行任务上限": invalid}, http.StatusBadRequest, &problem)
+		request(http.MethodPut, configPath, map[string]any{"maxParallelTasks": invalid}, http.StatusBadRequest, &problem)
 	}
 	var persisted host.Plugin
 	request(http.MethodGet, "/api/v1/extensions/"+plugin.ID, nil, http.StatusOK, &persisted)
-	if persisted.Config["备份目录"] != dir || persisted.Config["并行任务上限"] != float64(3) {
+	if persisted.Config["backupDir"] != dir || persisted.Config["maxParallelTasks"] != float64(3) {
 		t.Fatalf("settings after failed save = %+v", persisted.Config)
 	}
 
@@ -112,8 +117,8 @@ func TestPostgresBackupDirectory(t *testing.T) {
 	}
 
 	var cleared host.Plugin
-	request(http.MethodPut, configPath, map[string]any{"备份目录": nil}, http.StatusOK, &cleared)
-	if cleared.Config["备份目录"] != nil || cleared.Config["并行任务上限"] != float64(3) {
+	request(http.MethodPut, configPath, map[string]any{"backupDir": nil}, http.StatusOK, &cleared)
+	if cleared.Config["backupDir"] != nil || cleared.Config["maxParallelTasks"] != float64(3) {
 		t.Fatalf("cleared directory config = %+v", cleared.Config)
 	}
 }
@@ -156,7 +161,7 @@ func TestPostgresBackupWorkflow(t *testing.T) {
 	var config host.Plugin
 	archives := filepath.Join(dataDir, "test archives")
 	request(http.MethodPut, "/api/v1/extensions/"+plugin.ID+"/config",
-		map[string]any{"备份目录": archives}, http.StatusOK, &config)
+		map[string]any{"backupDir": archives}, http.StatusOK, &config)
 	if err := extensionHost.Enable(ctx, plugin.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -328,72 +333,5 @@ func TestPostgresBackupWorkflow(t *testing.T) {
 	call(http.MethodDelete, "backups", map[string]any{"id": backup.ID}, http.StatusOK, nil)
 	if _, err := os.Stat(backup.ArchivePath); !os.IsNotExist(err) {
 		t.Fatalf("deleted archive still exists: %v", err)
-	}
-}
-
-func TestPostgresBackupLegacyStorage(t *testing.T) {
-	ctx := testContext(t)
-	extensionHost, dataDir := newTestHost(t, ctx)
-	plugin := installPostgresBackup(t, ctx, extensionHost)
-	pluginDir := filepath.Join(dataDir, "plugins", plugin.ID)
-	archive := filepath.Join(pluginDir, "data", "old.dump")
-	if err := os.MkdirAll(filepath.Dir(archive), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(archive, []byte("old fixture"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	business, err := store.OpenBusiness(ctx, filepath.Join(pluginDir, "business.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = business.Close() })
-	if _, err := business.Exec(ctx, `CREATE TABLE backups (
-		id TEXT PRIMARY KEY, target TEXT NOT NULL, status TEXT NOT NULL, started_at TEXT NOT NULL,
-		file_name TEXT, error TEXT)`, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := business.Exec(ctx, `INSERT INTO backups VALUES
-		('old', 'legacy target', 'succeeded', '2026-01-01T00:00:00Z', 'old.dump', NULL),
-		('interrupted', 'legacy target', 'running', '2026-01-01T00:00:00Z', NULL, NULL)`, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := business.Set(ctx, "connection", `{"host":"fixture.invalid","port":5432,"database":"legacy","username":"fixture","password":"fixture-only"}`); err != nil {
-		t.Fatal(err)
-	}
-	if err := business.Set(ctx, "schedule", "@every 24h"); err != nil {
-		t.Fatal(err)
-	}
-	request := postgresBackupRequest(t, extensionHost)
-	if err := extensionHost.Enable(ctx, plugin.ID); err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		var sources struct {
-			Sources []struct {
-				Database      string
-				PasswordSaved bool
-			}
-		}
-		request(http.MethodGet, plugin.APIPath+"sources", nil, http.StatusOK, &sources)
-		if len(sources.Sources) != 1 || sources.Sources[0].Database != "legacy" || !sources.Sources[0].PasswordSaved {
-			t.Fatalf("migrated sources: %+v", sources.Sources)
-		}
-		var result struct{ Jobs []postgresBackupJob }
-		request(http.MethodGet, plugin.APIPath+"backups", nil, http.StatusOK, &result)
-		if len(result.Jobs) != 2 || result.Jobs[0].Status != "failed" || result.Jobs[1].ArchivePath != archive {
-			t.Fatalf("migrated archive history: %+v", result.Jobs)
-		}
-		var schedules struct{ Schedules []struct{ Expression string } }
-		request(http.MethodGet, plugin.APIPath+"schedules", nil, http.StatusOK, &schedules)
-		if len(schedules.Schedules) != 1 || schedules.Schedules[0].Expression != "@every 24h" {
-			t.Fatalf("migrated schedules: %+v", schedules.Schedules)
-		}
-		if err := extensionHost.Stop(ctx, plugin.ID); err != nil {
-			t.Fatal(err)
-		}
-		if err := extensionHost.Start(ctx, plugin.ID); err != nil {
-			t.Fatal(err)
-		}
 	}
 }

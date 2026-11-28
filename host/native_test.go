@@ -234,9 +234,9 @@ func TestNativePluginRejectsIncompatiblePackageAndFailedStart(t *testing.T) {
 	request := httptest.NewRequest("POST", "/api/v1/extensions", bytes.NewReader(future))
 	request.Header.Set("Content-Type", "application/zip")
 	h.Handler(host.HTTPOptions{}).ServeHTTP(response, request)
-	var problem struct{ Error string }
+	var problem struct{ Message string }
 	if err := json.Unmarshal(response.Body.Bytes(), &problem); err != nil || response.Code != 400 ||
-		!strings.Contains(problem.Error, "requires Extension Host >= 99.0.0") {
+		!strings.Contains(problem.Message, "requires Extension Host >= 99.0.0") {
 		t.Fatalf("future minimum = %d %s", response.Code, response.Body)
 	}
 	if _, ok := h.Get(nativeProvider); ok {

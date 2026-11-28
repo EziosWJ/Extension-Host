@@ -1,8 +1,27 @@
 {
   "schemaVersion": 1,
-  "id": "com.godesk.webonly",
+  "id": "com.example.web-only",
   "name": "Web-only Example",
   "version": "0.1.0",
-  "hostApi": { "min": 1, "max": 1 },
-  "entry": { "web": "web/index.html" }
+  "hostApi": {
+    "min": 1,
+    "max": 1
+  },
+  "entry": {
+    "web": "web/index.html"
+  },
+  "description": "Demonstrates a static web page served by Extension Host.",
+  "author": {
+    "name": "Jian Wang"
+  },
+  "license": "UNLICENSED",
+  "categories": [
+    "utility"
+  ],
+  "locales": {
+    "zh-CN": {
+      "name": "纯网页示例",
+      "description": "演示由 Extension Host 提供的静态网页。"
+    }
+  }
 }

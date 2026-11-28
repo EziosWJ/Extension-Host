@@ -147,17 +147,11 @@ func TestLogsIsolatePackageCoordinates(t *testing.T) {
 		return plugin
 	}
 	first := install("x", "1.2.3-4.5.6", "first-coordinate")
-	legacy := filepath.Join(dataDir, "logs", "x-1.2.3-4.5.6.log")
-	if err := os.WriteFile(legacy, []byte("ambiguous legacy\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if lines := logs(first.ID); len(lines) != 0 {
-		t.Fatalf("ambiguous legacy log was returned before second install: %q", lines)
-	}
 	second := install("x-1.2.3", "4.5.6", "second-coordinate")
 	for _, plugin := range []host.Plugin{first, second} {
-		if lines := logs(plugin.ID); len(lines) != 0 {
-			t.Fatalf("ambiguous legacy log was returned for %s: %q", plugin.ID, lines)
+		want := filepath.Join(dataDir, "logs", "by-plugin", plugin.ID, plugin.Version+".log")
+		if plugin.LogPath != want {
+			t.Fatalf("log path for %s = %q, want %q", plugin.ID, plugin.LogPath, want)
 		}
 		if err := h.Enable(ctx, plugin.ID); err != nil {
 			t.Fatal(err)
@@ -168,34 +162,21 @@ func TestLogsIsolatePackageCoordinates(t *testing.T) {
 		{second.ID, "second-coordinate", "first-coordinate"},
 	} {
 		body := strings.Join(logs(tc.id), "\n")
-		if !strings.Contains(body, tc.own) || strings.Contains(body, tc.other) || strings.Contains(body, "ambiguous legacy") {
+		if !strings.Contains(body, tc.own) || strings.Contains(body, tc.other) {
 			t.Fatalf("mixed logs for %s: %q", tc.id, body)
 		}
-	}
-	unique := install("unique", "1.0.0", "new-layout")
-	if err := os.WriteFile(filepath.Join(dataDir, "logs", "unique-1.0.0.log"), []byte("unique legacy\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if lines := logs(unique.ID); !slices.Equal(lines, []string{"unique legacy"}) {
-		t.Fatalf("unique legacy log = %q", lines)
-	}
-	if err := h.Enable(ctx, unique.ID); err != nil {
-		t.Fatal(err)
-	}
-	if body := strings.Join(logs(unique.ID), "\n"); !strings.Contains(body, "new-layout") || strings.Contains(body, "unique legacy") {
-		t.Fatalf("expected new layout to take precedence: %q", body)
 	}
 }
 
 func checkExtensionError(t *testing.T, response *httptest.ResponseRecorder, status int, code string) {
 	t.Helper()
 	var body struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-		Error   string `json:"error"`
+		Code    string  `json:"code"`
+		Message string  `json:"message"`
+		Error   *string `json:"error"`
 	}
 	if response.Code != status || response.Header().Get("Cache-Control") != "no-store" ||
-		json.Unmarshal(response.Body.Bytes(), &body) != nil || body.Code != code || body.Message == "" || body.Error != body.Message {
+		json.Unmarshal(response.Body.Bytes(), &body) != nil || body.Code != code || body.Message == "" || body.Error != nil {
 		t.Fatalf("response = %d %s, want %d %s", response.Code, response.Body, status, code)
 	}
 }

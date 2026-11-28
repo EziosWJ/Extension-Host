@@ -181,6 +181,12 @@ input { min-width: 0; color: inherit; font: inherit; accent-color: var(--react-w
   background: var(--react-web-desktop-raised);
 }
 .identity { min-width: 0; }
+.plugin-title { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.plugin-icon { flex: none; width: 16px; height: 16px; object-fit: contain; }
+.plugin-description, .plugin-attribution { margin-top: 4px; overflow-wrap: anywhere; }
+.plugin-description:empty, .plugin-attribution:empty { display: none; }
+.config-field { min-width: 0; }
+.config-field > .caption { margin-top: 4px; overflow-wrap: anywhere; }
 .caption, .badge, .metadata, .field, #install-form > label {
   color: var(--react-web-desktop-muted);
   font-size: 0.75rem;
@@ -262,8 +268,9 @@ dialog form { display: grid; gap: 8px; }
 }
 
 /* 独立宿主控制台 */
-.brand { font-size: 1rem; font-weight: 650; letter-spacing: -.02em; }
-.brand span { margin-left: 10px; color: var(--react-web-desktop-muted); font-size: .75rem; font-weight: 400; }
+.brand { display: inline-flex; align-items: center; gap: 8px; font-size: 1rem; font-weight: 650; letter-spacing: -.02em; }
+.brand-mark { flex: none; display: block; width: 20px; height: 20px; border-radius: 4px; }
+.brand span { margin-left: 2px; color: var(--react-web-desktop-muted); font-size: .75rem; font-weight: 400; }
 main { padding-top: 36px; padding-bottom: 64px; }
 .page-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
 .page-heading h1 { font-size: 1.5rem; line-height: 2rem; }

@@ -127,7 +127,7 @@ local handle, err = host.process.spawn(program, args[, options])
 3. **Subagent 3（通用文件系统）**：实现 P1-2 的 `internal/lua/fs.go` 及单元测试 `internal/lua/fs_test.go`。
 4. **主协调器集成与验收**：完成 `internal/lua/hostapi.go` 与 `internal/lua/runtime.go` 的统一接线，补充端到端集成测试 `host/lua_events_test.go` 与 `host/lua_fs_test.go`，更新 `README.md`，最终执行 `make check`（`go vet`、`go test ./...`、`go build`、`gofmt`）全部通过。
 
-## v0.3.x 增量能力
+## v0.1.0 增补能力
 
 - `host.http.request(options)` 发起 HTTP 或 HTTPS 请求，支持请求头、请求体、超时、重定向和 TLS 验证设置。返回 `status`、`headers`、`body`、`bodyTruncated` 和 `latencyMs`。响应体默认限制为 1 MiB，最高 8 MiB，超限返回截断内容并设置标记。
 - `host.fs.readFile(path[, options])` 读取文本或二进制文件。`maxBytes` 默认 1 MiB，最高 8 MiB，超限返回 `nil, err`。

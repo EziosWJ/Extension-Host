@@ -24,8 +24,8 @@ func standaloneHandler(extensionHost *host.Host, dev *developmentSession) http.H
 	mux.Handle("/api/v1/extensions/", extensions)
 	mux.Handle("/extensions/", extensions)
 	mux.Handle("GET /host/", http.StripPrefix("/host", web.Handler()))
-	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/host/favicon.svg", http.StatusFound)
 	})
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		target := "/host/"
@@ -43,7 +43,7 @@ func standaloneHandler(extensionHost *host.Host, dev *developmentSession) http.H
 		id, err := homePluginID(r, extensionHost, dev)
 		if err != nil {
 			slog.Error("read home plugin", "error", err)
-			writeHostJSON(w, http.StatusInternalServerError, map[string]string{"error": "无法读取首页设置"})
+			writeHostJSON(w, http.StatusInternalServerError, map[string]string{"code": "home_read_failed", "message": "无法读取首页设置"})
 			return
 		}
 		writeHostJSON(w, http.StatusOK, struct {
@@ -53,7 +53,7 @@ func standaloneHandler(extensionHost *host.Host, dev *developmentSession) http.H
 	})
 	mux.HandleFunc("PUT /api/v1/host/home", func(w http.ResponseWriter, r *http.Request) {
 		if dev != nil {
-			writeHostJSON(w, http.StatusConflict, map[string]string{"error": "开发模式自动选择首页"})
+			writeHostJSON(w, http.StatusConflict, map[string]string{"code": "development_mode", "message": "开发模式自动选择首页"})
 			return
 		}
 		var body struct {
@@ -61,15 +61,15 @@ func standaloneHandler(extensionHost *host.Host, dev *developmentSession) http.H
 		}
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
 		if err := decoder.Decode(&body); err != nil || body.PluginID == nil || decoder.Decode(new(any)) != io.EOF {
-			writeHostJSON(w, http.StatusBadRequest, map[string]string{"error": "需要提供 pluginId"})
+			writeHostJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_request", "message": "需要提供 pluginId"})
 			return
 		}
 		if err := extensionHost.SetHomePlugin(r.Context(), *body.PluginID); err != nil {
 			if errors.Is(err, host.ErrInvalidHomePlugin) {
-				writeHostJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				writeHostJSON(w, http.StatusBadRequest, map[string]string{"code": "invalid_home_plugin", "message": err.Error()})
 			} else {
 				slog.Error("save home plugin", "error", err)
-				writeHostJSON(w, http.StatusInternalServerError, map[string]string{"error": "无法保存首页设置"})
+				writeHostJSON(w, http.StatusInternalServerError, map[string]string{"code": "home_save_failed", "message": "无法保存首页设置"})
 			}
 			return
 		}

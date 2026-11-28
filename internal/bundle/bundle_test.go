@@ -11,7 +11,7 @@ import (
 
 const validManifest = `{
 	"schemaVersion": 1,
-	"id": "com.godesk.test",
+	"id": "com.example.test",
 	"name": "Test",
 	"version": "1.0.0",
 	"hostApi": {"min": 1, "max": 1},
@@ -183,5 +183,123 @@ func TestLoadZipRejectsDuplicatePaths(t *testing.T) {
 	}
 	if _, err := LoadZip(buffer.Bytes()); err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("duplicate error = %v", err)
+	}
+}
+
+const iconManifest = `{
+  "schemaVersion": 1,
+  "id": "de.jianwang.icon-demo",
+  "name": "Icon Demo",
+  "version": "1.0.0",
+  "hostApi": {"min": 1, "max": 1},
+  "entry": {"lua": "lua/init.lua"},
+  "description": "Shows a package icon.",
+  "author": {"name": "Test Author"},
+  "license": "MIT",
+  "icon": "assets/images/icon.PNG"
+}`
+
+const iconPath = "assets/images/icon.PNG"
+
+func TestLoadProjectCollectsOnlyDeclaredIcon(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, data string) {
+		t.Helper()
+		target := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("manifest.json", iconManifest)
+	write("lua/init.lua", "return {}")
+	write(iconPath, strings.Repeat("x", maxIconSize))
+	write("assets/images/notes.txt", "omit me")
+
+	pkg, err := LoadProject(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pkg.Files[iconPath]) != maxIconSize || len(pkg.Files) != 3 {
+		t.Fatalf("expected only manifest, Lua entry, and icon, got %d files", len(pkg.Files))
+	}
+	if err := pkg.ValidateStrict(); err != nil {
+		t.Fatal(err)
+	}
+
+	write(iconPath, strings.Repeat("x", maxIconSize+1))
+	if _, err := LoadProject(dir); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized project icon: %v", err)
+	}
+	icon := filepath.Join(dir, iconPath)
+	if err := os.Remove(icon); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadProject(dir); err == nil || !strings.Contains(err.Error(), "icon") {
+		t.Fatalf("missing project icon: %v", err)
+	}
+	if err := os.Mkdir(icon, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadProject(dir); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("directory icon: %v", err)
+	}
+	if err := os.Remove(icon); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "assets/images/notes.txt"), icon); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadProject(dir); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("symlink icon: %v", err)
+	}
+
+	images := filepath.Dir(icon)
+	if err := os.Rename(images, filepath.Join(dir, "images")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "images", filepath.Base(icon))); err != nil {
+		t.Fatal(err)
+	}
+	write("images/icon.PNG", "icon")
+	if err := os.Symlink(filepath.Join(dir, "images"), images); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadProject(dir); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("symlink icon parent: %v", err)
+	}
+}
+
+func TestBundleValidateStrictAndIcon(t *testing.T) {
+	files := map[string]string{"manifest.json": iconManifest, "lua/init.lua": "return {}"}
+	if _, err := LoadZip(makeZip(t, files)); err == nil || !strings.Contains(err.Error(), "icon") {
+		t.Fatalf("ZIP with missing icon: %v", err)
+	}
+	files[iconPath] = strings.Repeat("x", maxIconSize+1)
+	if _, err := LoadZip(makeZip(t, files)); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("ZIP with oversized icon: %v", err)
+	}
+	files[iconPath] = "icon"
+	pkg, err := LoadZip(makeZip(t, files))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pkg.ValidateStrict(); err != nil {
+		t.Fatal(err)
+	}
+	pkg.Manifest.ID = "com.example.icon-demo"
+	if err := pkg.ValidateStrict(); err == nil || !strings.Contains(err.Error(), "id") {
+		t.Fatalf("strict bundle with reserved ID: %v", err)
+	}
+	pkg.Manifest.ID = "de.jianwang.icon-demo"
+	pkg.Files[iconPath] = make([]byte, maxIconSize+1)
+	if err := pkg.ValidateStrict(); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("strict bundle with oversized icon: %v", err)
+	}
+	delete(pkg.Files, iconPath)
+	if err := pkg.ValidateStrict(); err == nil || !strings.Contains(err.Error(), "icon") {
+		t.Fatalf("strict bundle with missing icon: %v", err)
 	}
 }

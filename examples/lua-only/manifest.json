@@ -1,8 +1,27 @@
 {
   "schemaVersion": 1,
-  "id": "com.godesk.luaonly",
+  "id": "com.example.lua-only",
   "name": "Lua-only Example",
   "version": "0.1.0",
-  "hostApi": { "min": 1, "max": 1 },
-  "entry": { "lua": "lua/init.lua" }
+  "hostApi": {
+    "min": 1,
+    "max": 1
+  },
+  "entry": {
+    "lua": "lua/init.lua"
+  },
+  "description": "Demonstrates Lua HTTP endpoints and events without a web entry.",
+  "author": {
+    "name": "Jian Wang"
+  },
+  "license": "UNLICENSED",
+  "categories": [
+    "utility"
+  ],
+  "locales": {
+    "zh-CN": {
+      "name": "纯 Lua 示例",
+      "description": "演示独立 Lua 插件的 HTTP 接口与事件。"
+    }
+  }
 }

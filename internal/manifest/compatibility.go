@@ -8,7 +8,7 @@ import (
 )
 
 // Version identifies this Extension Host implementation, including source builds.
-const Version = "0.3.0"
+const Version = "0.1.0"
 
 // CheckCompatibility checks requirements against the actual installation host.
 func (m *Manifest) CheckCompatibility() error {

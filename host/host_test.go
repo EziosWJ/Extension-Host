@@ -22,8 +22,8 @@ import (
 )
 
 const (
-	helloID   = "com.godesk.hello"
-	helloPath = "/extensions/com.godesk.hello"
+	helloID   = "com.example.hello"
+	helloPath = "/extensions/com.example.hello"
 )
 
 func TestOpenCreatesDataDirectory(t *testing.T) {
@@ -336,7 +336,7 @@ func TestStartFailureCanBeRetried(t *testing.T) {
 	server := startServer(t, extensionHost)
 	manifest := `{
 		"schemaVersion": 1,
-		"id": "com.godesk.flaky",
+		"id": "com.example.flaky",
 		"name": "Flaky",
 		"version": "1.0.0",
 		"hostApi": {"min": 1, "max": 1},
@@ -354,10 +354,10 @@ host.app.route("GET", "/ok", function()
 end)
 `
 	installPackage(t, ctx, extensionHost, manifest, map[string]string{"init.lua": lua})
-	if err := extensionHost.Enable(ctx, "com.godesk.flaky"); err == nil {
+	if err := extensionHost.Enable(ctx, "com.example.flaky"); err == nil {
 		t.Fatal("Enable succeeded despite a failing start hook")
 	}
-	plugin := getPlugin(t, extensionHost, "com.godesk.flaky")
+	plugin := getPlugin(t, extensionHost, "com.example.flaky")
 	if !plugin.Enabled || plugin.Status != host.StatusFailed {
 		t.Fatalf("failed plugin = enabled %v, status %s", plugin.Enabled, plugin.Status)
 	}
@@ -365,18 +365,18 @@ end)
 		t.Fatalf("error = %q", plugin.Error)
 	}
 
-	marker := filepath.Join(dataDir, "plugins", "com.godesk.flaky", "data", "ready")
+	marker := filepath.Join(dataDir, "plugins", "com.example.flaky", "data", "ready")
 	if err := os.WriteFile(marker, []byte("ready"), 0o600); err != nil {
 		t.Fatalf("write marker: %v", err)
 	}
-	if err := extensionHost.Start(ctx, "com.godesk.flaky"); err != nil {
+	if err := extensionHost.Start(ctx, "com.example.flaky"); err != nil {
 		t.Fatalf("retry Start: %v", err)
 	}
-	plugin = getPlugin(t, extensionHost, "com.godesk.flaky")
+	plugin = getPlugin(t, extensionHost, "com.example.flaky")
 	if plugin.Status != host.StatusRunning {
 		t.Fatalf("status after retry = %s", plugin.Status)
 	}
-	if status, body := httpGet(t, server.URL+"/extensions/com.godesk.flaky/api/ok"); status != 200 || body != "ok" {
+	if status, body := httpGet(t, server.URL+"/extensions/com.example.flaky/api/ok"); status != 200 || body != "ok" {
 		t.Fatalf("retried plugin = %d, %q", status, body)
 	}
 }
@@ -387,7 +387,7 @@ func TestUnauthorizedHostAPIIsExplicit(t *testing.T) {
 	server := startServer(t, extensionHost)
 	manifest := `{
 		"schemaVersion": 1,
-		"id": "com.godesk.denied",
+		"id": "com.example.denied",
 		"name": "Denied",
 		"version": "1.0.0",
 		"hostApi": {"min": 1, "max": 1},
@@ -400,10 +400,10 @@ host.app.route("GET", "/call", function()
 end)
 `
 	installPackage(t, ctx, extensionHost, manifest, map[string]string{"init.lua": lua})
-	if err := extensionHost.Enable(ctx, "com.godesk.denied"); err != nil {
+	if err := extensionHost.Enable(ctx, "com.example.denied"); err != nil {
 		t.Fatalf("Enable: %v", err)
 	}
-	status, body := httpGet(t, server.URL+"/extensions/com.godesk.denied/api/call")
+	status, body := httpGet(t, server.URL+"/extensions/com.example.denied/api/call")
 	if status != http.StatusInternalServerError {
 		t.Fatalf("status = %d, %q", status, body)
 	}
@@ -421,10 +421,10 @@ func TestWebOnlyAndLuaOnlyPlugins(t *testing.T) {
 	if err := extensionHost.Enable(ctx, webOnly.ID); err != nil {
 		t.Fatalf("Enable web-only: %v", err)
 	}
-	if status, body := httpGet(t, server.URL+"/extensions/com.godesk.webonly/web/"); status != 200 || !strings.Contains(body, "Web-only") {
+	if status, body := httpGet(t, server.URL+"/extensions/com.example.web-only/web/"); status != 200 || !strings.Contains(body, "Web-only") {
 		t.Fatalf("web-only page = %d, %q", status, body)
 	}
-	status, body := httpGet(t, server.URL+"/extensions/com.godesk.webonly/api/ping")
+	status, body := httpGet(t, server.URL+"/extensions/com.example.web-only/api/ping")
 	if status != http.StatusNotFound || !strings.Contains(body, "no Lua entry") {
 		t.Fatalf("web-only API = %d, %q", status, body)
 	}
@@ -433,17 +433,17 @@ func TestWebOnlyAndLuaOnlyPlugins(t *testing.T) {
 	if err := extensionHost.Enable(ctx, luaOnly.ID); err != nil {
 		t.Fatalf("Enable lua-only: %v", err)
 	}
-	status, body = httpGet(t, server.URL+"/extensions/com.godesk.luaonly/api/ping")
+	status, body = httpGet(t, server.URL+"/extensions/com.example.lua-only/api/ping")
 	if status != 200 || !strings.Contains(body, `"message":"pong"`) {
 		t.Fatalf("lua-only API = %d, %q", status, body)
 	}
-	status, body = httpGet(t, server.URL+"/extensions/com.godesk.luaonly/web/")
+	status, body = httpGet(t, server.URL+"/extensions/com.example.lua-only/web/")
 	if status != http.StatusNotFound || !strings.Contains(body, "no web entry") {
 		t.Fatalf("lua-only web = %d, %q", status, body)
 	}
 
 	connection := dialEvents(t, ctx, server.URL, luaOnly.ID)
-	status = httpJSON(t, http.MethodPost, server.URL+"/extensions/com.godesk.luaonly/api/emit",
+	status = httpJSON(t, http.MethodPost, server.URL+"/extensions/com.example.lua-only/api/emit",
 		map[string]any{"hello": "world"}, nil)
 	if status != http.StatusAccepted {
 		t.Fatalf("emit = %d", status)
@@ -469,7 +469,7 @@ func TestInvalidPackagesAndConflicts(t *testing.T) {
 	if _, err := extensionHost.Install(ctx, bytes.NewReader(zipFiles(t, map[string]string{
 		"manifest.json": `{
 			"schemaVersion": 1,
-			"id": "com.godesk.missing",
+			"id": "com.example.missing",
 			"name": "Missing",
 			"version": "1.0.0",
 			"hostApi": {"min": 1, "max": 1},
@@ -481,7 +481,7 @@ func TestInvalidPackagesAndConflicts(t *testing.T) {
 	if _, err := extensionHost.Install(ctx, bytes.NewReader(zipFiles(t, map[string]string{
 		"manifest.json": `{
 			"schemaVersion": 1,
-			"id": "com.godesk.future",
+			"id": "com.example.future",
 			"name": "Future",
 			"version": "1.0.0",
 			"hostApi": {"min": 2, "max": 2},
@@ -494,7 +494,7 @@ func TestInvalidPackagesAndConflicts(t *testing.T) {
 	if _, err := extensionHost.Install(ctx, bytes.NewReader(zipFiles(t, map[string]string{
 		"manifest.json": `{
 			"schemaVersion": 1,
-			"id": "com.godesk.traversal",
+			"id": "com.example.traversal",
 			"name": "Traversal",
 			"version": "1.0.0",
 			"hostApi": {"min": 1, "max": 1},
@@ -556,7 +556,7 @@ func TestConfigValidationAndSessionAdapter(t *testing.T) {
 
 	manifest := `{
 		"schemaVersion": 1,
-		"id": "com.godesk.required",
+		"id": "com.example.required",
 		"name": "Required",
 		"version": "1.0.0",
 		"hostApi": {"min": 1, "max": 1},
@@ -564,13 +564,13 @@ func TestConfigValidationAndSessionAdapter(t *testing.T) {
 		"config": {"apiKey": {"type": "string", "required": true, "secret": true}}
 	}`
 	installPackage(t, ctx, extensionHost, manifest, map[string]string{"index.html": "<html></html>"})
-	status = httpJSON(t, http.MethodPut, openServer.URL+"/api/v1/extensions/com.godesk.required/config",
+	status = httpJSON(t, http.MethodPut, openServer.URL+"/api/v1/extensions/com.example.required/config",
 		map[string]any{}, nil)
 	if status != http.StatusBadRequest {
 		t.Fatalf("missing required field status = %d", status)
 	}
 	var plugin host.Plugin
-	status = httpJSON(t, http.MethodPut, openServer.URL+"/api/v1/extensions/com.godesk.required/config",
+	status = httpJSON(t, http.MethodPut, openServer.URL+"/api/v1/extensions/com.example.required/config",
 		map[string]any{"apiKey": "value"}, &plugin)
 	if status != 200 {
 		t.Fatalf("required field status = %d", status)
@@ -772,4 +772,105 @@ func testContext(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+func TestPluginMetadataAndIcon(t *testing.T) {
+	ctx := testContext(t)
+	extensionHost, dataDir := newTestHost(t, ctx)
+	handler := extensionHost.Handler(host.HTTPOptions{})
+	get := func(path string) *httptest.ResponseRecorder {
+		t.Helper()
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		return response
+	}
+
+	if response := get("/extensions/com.example.missing/icon"); response.Code != http.StatusNotFound {
+		t.Fatalf("missing plugin icon: %d", response.Code)
+	}
+	withoutIcon := installExample(t, ctx, extensionHost, "lua-only")
+	if response := get("/extensions/" + withoutIcon.ID + "/icon"); response.Code != http.StatusNotFound {
+		t.Fatalf("undeclared plugin icon: %d", response.Code)
+	}
+
+	const metadata = `{
+	  "schemaVersion":1, "id":"com.example.icon-SLUG", "name":"Icon Example", "version":"0.1.0",
+	  "hostApi":{"min":1,"max":1}, "entry":{"lua":"lua/init.lua"},
+	  "description":"An example with an icon.", "author":{"name":"Test Author"}, "license":"MIT",
+	  "homepage":"https://example.org", "repository":"https://example.org/source",
+	  "icon":"assets/icon.EXT", "categories":["utility"], "keywords":["demo"],
+	  "requirements":{"os":["linux"],"commands":["unavailable-test-command"],"systemd":true},
+	  "config":{"maxJobs":{"type":"number","format":"integer","min":1,"max":16,"default":2,"label":"Max Jobs","description":"Maximum concurrent jobs."}},
+	  "locales":{"zh-CN":{"name":"示例","description":"带图标的示例。","config":{"maxJobs":{"label":"任务上限","description":"最多可同时运行的任务。"}}}}
+	}`
+	for _, tc := range []struct{ extension, mime string }{
+		{"SVG", "image/svg+xml"},
+		{"PNG", "image/png"},
+		{"WEBP", "image/webp"},
+	} {
+		t.Run(tc.extension, func(t *testing.T) {
+			name := "assets/icon." + tc.extension
+			data := "test icon " + tc.extension
+			source := strings.NewReplacer("SLUG", strings.ToLower(tc.extension), "EXT", tc.extension).Replace(metadata)
+			plugin := installPackage(t, ctx, extensionHost, source, map[string]string{"lua/init.lua": "return {}", name: data})
+			if plugin.Enabled || plugin.Status != host.StatusStopped || plugin.HasWeb ||
+				plugin.IconPath != "/extensions/"+plugin.ID+"/icon" || plugin.Icon != name {
+				t.Fatalf("unexpected plugin after install: %+v", plugin)
+			}
+			assertMetadata := func(p host.Plugin) {
+				t.Helper()
+				if p.Description != "An example with an icon." || p.Author == nil || p.Author.Name != "Test Author" ||
+					p.License != "MIT" || p.Homepage != "https://example.org" || p.Repository != "https://example.org/source" ||
+					len(p.Categories) != 1 || p.Categories[0] != "utility" || len(p.Keywords) != 1 || p.Keywords[0] != "demo" ||
+					p.Requirements == nil || !p.Requirements.Systemd || len(p.Requirements.OS) != 1 || p.Requirements.OS[0] != "linux" ||
+					len(p.Requirements.Commands) != 1 || p.Requirements.Commands[0] != "unavailable-test-command" ||
+					p.Locales["zh-CN"].Config["maxJobs"].Label != "任务上限" {
+					t.Fatalf("unexpected marketplace metadata: %+v", p)
+				}
+				field := p.ConfigSchema["maxJobs"]
+				if field.Format != "integer" || field.Min == nil || *field.Min != 1 || field.Max == nil || *field.Max != 16 ||
+					field.Label != "Max Jobs" || field.Description != "Maximum concurrent jobs." {
+					t.Fatalf("unexpected config metadata: %+v", field)
+				}
+			}
+			assertMetadata(plugin)
+			details := get("/api/v1/extensions/" + plugin.ID)
+			var fromAPI host.Plugin
+			if details.Code != http.StatusOK || json.Unmarshal(details.Body.Bytes(), &fromAPI) != nil {
+				t.Fatalf("plugin details: %d %s", details.Code, details.Body)
+			}
+			assertMetadata(fromAPI)
+
+			response := get(plugin.IconPath)
+			if response.Code != http.StatusOK || response.Body.String() != data ||
+				response.Header().Get("Content-Type") != tc.mime ||
+				response.Header().Get("Cache-Control") != "no-cache" ||
+				response.Header().Get("X-Content-Type-Options") != "nosniff" {
+				t.Fatalf("icon response: %d %v %q", response.Code, response.Header(), response.Body)
+			}
+			if err := extensionHost.Enable(ctx, plugin.ID); err != nil {
+				t.Fatalf("requirements must be informational: %v", err)
+			}
+			if err := extensionHost.Stop(ctx, plugin.ID); err != nil {
+				t.Fatal(err)
+			}
+			if response := get(plugin.IconPath); response.Code != http.StatusOK {
+				t.Fatalf("stopped plugin icon: %d", response.Code)
+			}
+			local := filepath.Join(dataDir, "packages", plugin.ID, name)
+			if err := os.Remove(local); err != nil {
+				t.Fatal(err)
+			}
+			outside := filepath.Join(t.TempDir(), "outside-icon")
+			if err := os.WriteFile(outside, []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, local); err != nil {
+				t.Fatal(err)
+			}
+			if response := get(plugin.IconPath); response.Code != http.StatusNotFound {
+				t.Fatalf("icon symlink: %d %q", response.Code, response.Body)
+			}
+		})
+	}
 }

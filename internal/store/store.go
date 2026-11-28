@@ -172,7 +172,6 @@ func (s *Store) setPackage(ctx context.Context, plugin Plugin, development bool)
 			return err
 		}
 	}
-	// Retain the legacy table name so existing development snapshots still resolve.
 	_, err = tx.ExecContext(ctx, `INSERT INTO development_packages (plugin_id, directory) VALUES (?, ?)
 		ON CONFLICT(plugin_id) DO UPDATE SET directory = excluded.directory`, plugin.ID, plugin.PackageDirectory)
 	if err != nil {

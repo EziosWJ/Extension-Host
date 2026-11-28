@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "id": "de.jianwang.postgres-backup",
+  "name": "PostgreSQL Backup",
+  "version": "0.1.0",
+  "minHostVersion": "0.1.0",
+  "hostApi": {
+    "min": 1,
+    "max": 1
+  },
+  "entry": {
+    "lua": "lua/init.lua",
+    "web": "web/index.html"
+  },
+  "config": {
+    "backupDir": {
+      "type": "string",
+      "format": "writable-directory",
+      "default": "",
+      "label": "Backup Directory",
+      "description": "Absolute host path. Defaults to the plugin data directory."
+    },
+    "maxParallelTasks": {
+      "type": "number",
+      "format": "integer",
+      "required": true,
+      "min": 1,
+      "max": 16,
+      "default": 2,
+      "label": "Max Parallel Tasks",
+      "description": "Maximum number of concurrent backup or restore tasks."
+    }
+  },
+  "description": "Backup, browse schemas, and restore PostgreSQL databases with scheduled jobs.",
+  "author": {
+    "name": "Jian Wang",
+    "url": "https://jianwang.de"
+  },
+  "license": "UNLICENSED",
+  "categories": [
+    "database",
+    "ops"
+  ],
+  "requirements": {
+    "os": [
+      "linux"
+    ],
+    "commands": [
+      "psql",
+      "pg_dump",
+      "pg_restore",
+      "install"
+    ]
+  },
+  "locales": {
+    "zh-CN": {
+      "name": "PostgreSQL 备份",
+      "description": "配置多数据源、浏览库表结构并执行 PostgreSQL 定时备份与恢复。",
+      "config": {
+        "backupDir": {
+          "label": "备份目录",
+          "description": "宿主机绝对路径，留空时使用插件数据目录。"
+        },
+        "maxParallelTasks": {
+          "label": "并行任务上限",
+          "description": "可同时执行的备份或恢复任务数量。"
+        }
+      }
+    }
+  }
+}

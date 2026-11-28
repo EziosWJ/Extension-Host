@@ -19,6 +19,8 @@ var (
 	ErrNoLua = errors.New("plugin has no Lua entry")
 	// ErrNoWeb means the plugin has no web entry.
 	ErrNoWeb = errors.New("plugin has no web entry")
+	// ErrNoIcon means the plugin has no declared icon.
+	ErrNoIcon = errors.New("plugin has no icon")
 	// ErrClosed means the host has been closed.
 	ErrClosed = errors.New("extension host is closed")
 )

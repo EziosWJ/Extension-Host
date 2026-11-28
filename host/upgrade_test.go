@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	upgradeID   = "com.godesk.upgrade"
+	upgradeID   = "com.example.upgrade"
 	upgradePath = "/api/v1/extensions/" + upgradeID
 )
 

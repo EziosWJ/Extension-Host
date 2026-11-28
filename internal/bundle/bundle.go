@@ -24,6 +24,7 @@ const (
 	maxFileSize    = 64 << 20
 	maxFileCount   = 4096
 	maxManifest    = 1 << 20
+	maxIconSize    = 256 << 10
 )
 
 // Bundle is a validated plugin package held in memory.
@@ -145,7 +146,72 @@ func loadDir(dir string, project bool, exclude ...string) (*Bundle, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read package: %w", err)
 	}
-	return build(files, manifest.Parse)
+	parsed, err := packageManifest(files, manifest.Parse)
+	if err != nil {
+		return nil, err
+	}
+	top, _, _ := strings.Cut(parsed.Icon, "/")
+	if project && parsed.Icon != "" && top != "web" && top != "lua" && top != "native" {
+		if len(files) >= maxFileCount {
+			return nil, fmt.Errorf("package contains more than %d files", maxFileCount)
+		}
+		data, err := readProjectIcon(root, parsed.Icon)
+		if err != nil {
+			return nil, fmt.Errorf("package: icon %q: %w", parsed.Icon, err)
+		}
+		if total+int64(len(data)) > MaxPackageSize {
+			return nil, fmt.Errorf("package exceeds %d bytes uncompressed", MaxPackageSize)
+		}
+		files[parsed.Icon] = data
+	}
+	return build(files, parsed)
+}
+
+func readProjectIcon(dir, name string) ([]byte, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	parts := strings.Split(name, "/")
+	for i := 1; i < len(parts); i++ {
+		parent := filepath.Join(parts[:i]...)
+		info, err := root.Lstat(parent)
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("icon parent %q must be a directory without symlinks", parent)
+		}
+	}
+	local := filepath.FromSlash(name)
+	info, err := root.Lstat(local)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("must be a regular file without symlinks")
+	}
+	file, err := root.Open(local)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err = file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("must be a regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxIconSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxIconSize {
+		return nil, fmt.Errorf("exceeds %d bytes", maxIconSize)
+	}
+	return data, nil
 }
 
 // LoadZip reads and validates a ZIP package.
@@ -213,7 +279,11 @@ func loadZip(data []byte, parseManifest func([]byte) (*manifest.Manifest, error)
 		}
 		files[name] = data
 	}
-	return build(files, parseManifest)
+	parsed, err := packageManifest(files, parseManifest)
+	if err != nil {
+		return nil, err
+	}
+	return build(files, parsed)
 }
 
 // Zip serializes the bundle into a deterministic ZIP archive.
@@ -280,24 +350,13 @@ func (b *Bundle) Filename() string {
 	return name + ".zip"
 }
 
-func build(files map[string][]byte, parseManifest func([]byte) (*manifest.Manifest, error)) (*Bundle, error) {
+func build(files map[string][]byte, parsed *manifest.Manifest) (*Bundle, error) {
 	for name := range files {
 		for parent := path.Dir(name); parent != "."; parent = path.Dir(parent) {
 			if _, exists := files[parent]; exists {
 				return nil, fmt.Errorf("package path %q is both a file and a directory", parent)
 			}
 		}
-	}
-	data, ok := files["manifest.json"]
-	if !ok {
-		return nil, fmt.Errorf("package: manifest.json is missing from the package root")
-	}
-	if len(data) > maxManifest {
-		return nil, fmt.Errorf("package: manifest.json exceeds %d bytes", maxManifest)
-	}
-	parsed, err := parseManifest(data)
-	if err != nil {
-		return nil, fmt.Errorf("package: %w", err)
 	}
 	for name, entry := range map[string]string{"entry.web": parsed.Entry.Web, "entry.lua": parsed.Entry.Lua, "entry.native": parsed.Entry.Native} {
 		if entry == "" {
@@ -312,7 +371,49 @@ func build(files map[string][]byte, parseManifest func([]byte) (*manifest.Manife
 			return nil, fmt.Errorf("package: entry.native %q: %w", parsed.Entry.Native, err)
 		}
 	}
-	return &Bundle{Manifest: parsed, Files: files}, nil
+	pkg := &Bundle{Manifest: parsed, Files: files}
+	if err := pkg.validateIcon(); err != nil {
+		return nil, err
+	}
+	return pkg, nil
+}
+
+func packageManifest(files map[string][]byte, parseManifest func([]byte) (*manifest.Manifest, error)) (*manifest.Manifest, error) {
+	data, ok := files["manifest.json"]
+	if !ok {
+		return nil, fmt.Errorf("package: manifest.json is missing from the package root")
+	}
+	if len(data) > maxManifest {
+		return nil, fmt.Errorf("package: manifest.json exceeds %d bytes", maxManifest)
+	}
+	parsed, err := parseManifest(data)
+	if err != nil {
+		return nil, fmt.Errorf("package: %w", err)
+	}
+	return parsed, nil
+}
+
+// ValidateStrict checks the bundle for marketplace publication.
+func (b *Bundle) ValidateStrict() error {
+	if err := b.Manifest.ValidateStrict(); err != nil {
+		return err
+	}
+	return b.validateIcon()
+}
+
+func (b *Bundle) validateIcon() error {
+	name := b.Manifest.Icon
+	if name == "" {
+		return nil
+	}
+	data, ok := b.Files[name]
+	if !ok {
+		return fmt.Errorf("package: icon %q does not exist", name)
+	}
+	if len(data) > maxIconSize {
+		return fmt.Errorf("package: icon %q exceeds %d bytes", name, maxIconSize)
+	}
+	return nil
 }
 
 func validateExecutable(data []byte, platform string) error {

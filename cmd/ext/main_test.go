@@ -5,9 +5,22 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestVersionCommand(t *testing.T) {
+	for _, args := range [][]string{{"version"}, {"--version"}, {"-version"}} {
+		if err := run(t.Context(), args); err != nil {
+			t.Fatalf("ext %v: %v", args, err)
+		}
+	}
+	output := versionOutput()
+	if !strings.HasPrefix(output, "ext v0.1.0") {
+		t.Fatalf("version = %q, want an ext v0.1.0 prefix", output)
+	}
+}
 
 func TestParseFlagsAfterPositional(t *testing.T) {
 	listen := ""
@@ -55,7 +68,7 @@ func TestPackAndValidate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load packed ZIP: %v", err)
 	}
-	if pkg.Manifest.ID != "com.godesk.hello" {
+	if pkg.Manifest.ID != "com.example.hello" {
 		t.Fatalf("id = %q", pkg.Manifest.ID)
 	}
 	if err := validate([]string{output}); err != nil {
@@ -91,7 +104,7 @@ func TestRunCommandFromDirectoryAndZip(t *testing.T) {
 
 			deadline := time.Now().Add(15 * time.Second)
 			for {
-				if _, err := os.Stat(filepath.Join(dataDir, "plugins", "com.godesk.hello", "business.db")); err == nil {
+				if _, err := os.Stat(filepath.Join(dataDir, "plugins", "com.example.hello", "business.db")); err == nil {
 					break
 				}
 				select {
@@ -114,5 +127,48 @@ func TestRunCommandFromDirectoryAndZip(t *testing.T) {
 				t.Fatal("runPlugin did not stop")
 			}
 		})
+	}
+}
+
+func TestValidateStrictCommand(t *testing.T) {
+	dir := t.TempDir()
+	const manifestTemplate = `{
+	  "schemaVersion":1, "id":"PLUGIN_ID", "name":"Test", "version":"0.1.0",
+	  "hostApi":{"min":1,"max":1}, "entry":{"web":"web/index.html"},
+	  "description":"An example for testing strict validation.", "author":{"name":"Test Author"}, "license":"MIT",
+	  "icon":"assets/icon.svg"
+	}`
+	for _, name := range []string{"web", "assets"} {
+		if err := os.Mkdir(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeDevTestFile(t, filepath.Join(dir, "web/index.html"), "<h1>Test</h1>")
+	writeDevTestFile(t, filepath.Join(dir, "assets/icon.svg"), "<svg/>")
+	writeManifest := func(id string) {
+		t.Helper()
+		writeDevTestFile(t, filepath.Join(dir, "manifest.json"), strings.Replace(manifestTemplate, "PLUGIN_ID", id, 1))
+	}
+	writeManifest("de.jianwang.test")
+	archive := filepath.Join(t.TempDir(), "plugin.zip")
+	if err := run(t.Context(), []string{"pack", dir, "-o", archive}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{dir, archive} {
+		for _, args := range [][]string{{"validate", "--strict", path}, {"validate", path, "--strict"}} {
+			if err := run(t.Context(), args); err != nil {
+				t.Fatalf("ext %q: %v", args, err)
+			}
+		}
+	}
+
+	writeManifest("com.example.test")
+	if err := run(t.Context(), []string{"validate", dir}); err != nil {
+		t.Fatalf("ordinary validation of example: %v", err)
+	}
+	for _, args := range [][]string{{"validate", "--strict", dir}, {"validate", dir, "--strict"}} {
+		if err := run(t.Context(), args); err == nil || !strings.Contains(err.Error(), "id") {
+			t.Fatalf("ext %q: got %v, want strict ID error", args, err)
+		}
 	}
 }

@@ -82,7 +82,7 @@ func initProject(args []string, in io.Reader, out io.Writer) error {
 		strings.ContainsAny(name, "/\\") || strings.ContainsFunc(name, unicode.IsControl) {
 		return errors.New("插件名称须是单个目录名，请填写名称并避开路径分隔符和控制字符")
 	}
-	id, err := read("插件标识（例如 com.example.hello）：")
+	id, err := read("插件标识（发布请使用自己的反向域名，例如 de.jianwang.demo 或 io.github.<user>.demo；本地示例 com.example.hello）：")
 	if err != nil {
 		return err
 	}
@@ -122,6 +122,7 @@ func createProject(directory, id, name string, kind projectType) error {
 		ID:            id,
 		Name:          name,
 		Version:       "0.1.0",
+		License:       "MIT",
 		HostAPI:       manifest.HostAPI{Min: manifest.HostAPIVersion, Max: manifest.HostAPIVersion},
 	}
 	if kind.web {

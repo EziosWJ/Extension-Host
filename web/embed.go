@@ -6,7 +6,7 @@ import (
 	"net/http"
 )
 
-//go:embed index.html app.js style.css
+//go:embed index.html app.js style.css favicon.svg
 var content embed.FS
 
 // Handler serves the management page and its assets.

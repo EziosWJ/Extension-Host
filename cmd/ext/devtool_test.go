@@ -53,6 +53,28 @@ func TestStandalonePluginLogsAndUpgrade(t *testing.T) {
 	}
 }
 
+func TestStandaloneFaviconAndBrand(t *testing.T) {
+	h, err := host.Open(t.Context(), host.Options{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close(context.Background())
+	handler := standaloneHandler(h, nil)
+
+	redirect := requestDevTest(t, handler, "GET", "/favicon.ico", "", http.StatusFound)
+	if location := redirect.Header().Get("Location"); location != "/host/favicon.svg" {
+		t.Fatalf("favicon redirect = %q", location)
+	}
+	favicon := requestDevTest(t, handler, "GET", "/host/favicon.svg", "", http.StatusOK)
+	if !strings.Contains(favicon.Body.String(), "<svg") || favicon.Header().Get("Content-Type") != "image/svg+xml" {
+		t.Fatalf("favicon = %q, %v", favicon.Body, favicon.Header())
+	}
+	index := requestDevTest(t, handler, "GET", "/host/", "", http.StatusOK).Body.String()
+	if !strings.Contains(index, `rel="icon"`) || !strings.Contains(index, `class="brand-mark"`) {
+		t.Fatalf("management page is missing the favicon link or brand mark")
+	}
+}
+
 func TestProjectTemplatesAndPackage(t *testing.T) {
 	for index, kind := range projectTypes {
 		t.Run(kind.label, func(t *testing.T) {
@@ -284,5 +306,64 @@ func buildNativeBackend(t *testing.T) {
 	command := exec.Command("go", "build", "-trimpath", "-o", "native/plugin", "./backend")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("build native backend: %v\n%s", err, output)
+	}
+}
+
+func TestProjectIconPackagingAndWatch(t *testing.T) {
+	project := t.TempDir()
+	t.Chdir(project)
+	for _, name := range []string{"web", "assets"} {
+		if err := os.Mkdir(name, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeDevTestFile(t, "manifest.json", `{
+	  "schemaVersion":1, "id":"com.example.icon", "name":"Icon", "version":"0.1.0",
+	  "hostApi":{"min":1,"max":1}, "entry":{"web":"web/index.html"},
+	  "icon":"assets/icon.svg"
+	}`)
+	writeDevTestFile(t, "web/index.html", "<h1>Icon</h1>")
+	writeDevTestFile(t, "assets/icon.svg", "<svg/>")
+	writeDevTestFile(t, "assets/notes.txt", "local project notes")
+	before, err := projectStamp(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	icon := filepath.Join(project, "assets/icon.svg")
+	if _, ok := before[icon]; !ok {
+		t.Fatal("declared icon is absent from the stamp")
+	}
+	if _, ok := before[filepath.Join(project, "assets/notes.txt")]; ok {
+		t.Fatal("unrelated asset is watched")
+	}
+
+	writeDevTestFile(t, icon, "<svg><title>New icon</title></svg>")
+	after, err := projectStamp(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before[icon] == after[icon] {
+		t.Fatal("editing the icon did not change its stamp")
+	}
+	if err := packageProject(nil); err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := loadBundle("dist/com.example.icon-0.1.0.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(pkg.Files["assets/icon.svg"]) != "<svg><title>New icon</title></svg>" || len(pkg.Files) != 3 {
+		t.Fatalf("unexpected packaged files: %v", pkg.Files)
+	}
+
+	if err := os.Remove(icon); err != nil {
+		t.Fatal(err)
+	}
+	after, err = projectStamp(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := after[icon]; ok {
+		t.Fatal("removed icon still appears in the stamp")
 	}
 }

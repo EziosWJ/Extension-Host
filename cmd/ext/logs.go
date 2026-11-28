@@ -83,11 +83,6 @@ func showLogs(ctx context.Context, args []string, workDir string, out io.Writer)
 	if err := cursor.write(path, lines, out); err != nil || !follow {
 		return err
 	}
-	var nestedPath string
-	if filepath.Dir(path) == logDir {
-		id, version := logtail.LegacyIdentity(filepath.Base(path))
-		nestedPath = logtail.Path(logDir, id, version)
-	}
 	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -95,28 +90,8 @@ func showLogs(ctx context.Context, args []string, workDir string, out io.Writer)
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			next := path
-			if nestedPath != "" {
-				info, err := os.Lstat(nestedPath)
-				switch {
-				case err == nil && info.Mode().IsRegular():
-					next = nestedPath
-				case err != nil && !errors.Is(err, os.ErrNotExist):
-					return fmt.Errorf("inspect nested plugin log: %w", err)
-				}
-			}
-			// Drain the legacy file before reading the replacement.
 			if err := cursor.write(path, lines, out); err != nil {
 				return err
-			}
-			if next == path {
-				continue
-			}
-			if err := cursor.write(next, lines, out); err != nil {
-				return err
-			}
-			if cursor.path == next {
-				path, nestedPath = next, ""
 			}
 		}
 	}
@@ -143,29 +118,16 @@ func logManifestID(path string) (string, error) {
 }
 
 func selectLog(dir, pluginID string) (string, error) {
-	entries, err := os.ReadDir(dir)
+	packageDir := logtail.PackageDir(dir)
+	pluginDirs, err := os.ReadDir(packageDir)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("list plugin logs: %w", err)
+		return "", fmt.Errorf("list plugin log directories: %w", err)
 	}
 	type logFile struct {
 		path  string
 		entry os.DirEntry
 	}
 	files := make(map[string]logFile)
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.Type().IsRegular() {
-			id, version := logtail.LegacyIdentity(name)
-			if path := logtail.Path(dir, id, version); path != "" && (pluginID == "" || id == pluginID) {
-				files[path] = logFile{filepath.Join(dir, name), entry}
-			}
-		}
-	}
-	packageDir := logtail.PackageDir(dir)
-	pluginDirs, err := os.ReadDir(packageDir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("list plugin log directories: %w", err)
-	}
 	for _, entry := range pluginDirs {
 		id := entry.Name()
 		if !entry.IsDir() || (pluginID != "" && id != pluginID) {

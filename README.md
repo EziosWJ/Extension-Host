@@ -28,6 +28,18 @@ Extension Host installs, enables, runs, and isolates plugins for GoDesk. A plugi
 
 Building requires Linux, Go 1.26, and GNU Make. Native plugins additionally need to be built for `linux-amd64` or `linux-arm64`.
 
+Prebuilt static binaries (SQLite included, no glibc dependency) are attached to each release:
+
+| Architecture | Asset | Typical target |
+| --- | --- | --- |
+| `linux/amd64` | `ext_<tag>_linux_amd64.tar.gz` | x86-64 servers and NAS |
+| `linux/arm64` | `ext_<tag>_linux_arm64.tar.gz` | Raspberry Pi 4/5, ARM64 servers |
+| `linux/armv7` | `ext_<tag>_linux_armv7.tar.gz` | 32-bit ARM SBCs and older ARM servers |
+| `linux/armv6` | `ext_<tag>_linux_armv6.tar.gz` | Raspberry Pi 1 and Zero |
+| `linux/386` | `ext_<tag>_linux_386.tar.gz` | 32-bit x86 |
+
+`SHA256SUMS` covers every asset in the release.
+
 ```sh
 git clone https://github.com/EziosWJ/Extension-Host.git
 cd Extension-Host

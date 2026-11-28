@@ -50,12 +50,28 @@ jobs:
           out="$RUNNER_TEMP/release"
           mkdir -p "$out"
           ldflags="-s -w -X github.com/EziosWJ/Extension-Host/internal/buildinfo.Version=${TAG} -X github.com/EziosWJ/Extension-Host/internal/buildinfo.Commit=$(git rev-parse --short HEAD) -X github.com/EziosWJ/Extension-Host/internal/buildinfo.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          for arch in amd64 arm64; do
-            stage="$RUNNER_TEMP/stage/$arch"
+
+          build() {
+            local goarch="$1"
+            local suffix="$2"
+            local goarm="${3:-}"
+            local stage="$RUNNER_TEMP/stage/$suffix"
             mkdir -p "$stage"
-            GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="$ldflags" -o "$stage/ext" ./cmd/ext
-            tar -C "$stage" -czf "$out/ext_${TAG}_linux_${arch}.tar.gz" ext
-          done
+            if [ -n "$goarm" ]; then
+              GOOS=linux GOARCH="$goarch" GOARM="$goarm" \
+                go build -trimpath -ldflags="$ldflags" -o "$stage/ext" ./cmd/ext
+            else
+              GOOS=linux GOARCH="$goarch" \
+                go build -trimpath -ldflags="$ldflags" -o "$stage/ext" ./cmd/ext
+            fi
+            tar -C "$stage" -czf "$out/ext_${TAG}_linux_${suffix}.tar.gz" ext
+          }
+
+          build 386 386
+          build amd64 amd64
+          build arm64 arm64
+          build arm armv7 7
+          build arm armv6 6
 
       - name: Package example plugins
         env:

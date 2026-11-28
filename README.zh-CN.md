@@ -28,6 +28,18 @@ Extension Host 负责安装、启用、运行和隔离 GoDesk 插件。插件可
 
 构建需要 Linux、Go 1.26 和 GNU Make。原生插件还需面向 `linux-amd64` 或 `linux-arm64` 构建。
 
+每个 Release 都附带静态二进制（内嵌 SQLite，不依赖 glibc）：
+
+| 架构 | 产物 | 适用设备 |
+| --- | --- | --- |
+| `linux/amd64` | `ext_<tag>_linux_amd64.tar.gz` | x86-64 服务器与 NAS |
+| `linux/arm64` | `ext_<tag>_linux_arm64.tar.gz` | 树莓派 4/5、ARM64 服务器 |
+| `linux/armv7` | `ext_<tag>_linux_armv7.tar.gz` | 32 位 ARM SBC、老式 ARM 服务器 |
+| `linux/armv6` | `ext_<tag>_linux_armv6.tar.gz` | 树莓派 1 与 Zero |
+| `linux/386` | `ext_<tag>_linux_386.tar.gz` | 32 位 x86 |
+
+`SHA256SUMS` 覆盖该 Release 的全部产物。
+
 ```sh
 git clone https://github.com/EziosWJ/Extension-Host.git
 cd Extension-Host

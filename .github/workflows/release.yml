@@ -72,6 +72,8 @@ jobs:
           build arm64 arm64
           build arm armv7 7
           build arm armv6 6
+          build riscv64 riscv64
+          build loong64 loong64
 
       - name: Package example plugins
         env:

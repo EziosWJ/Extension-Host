@@ -37,6 +37,8 @@ Extension Host 负责安装、启用、运行和隔离 GoDesk 插件。插件可
 | `linux/armv7` | `ext_<tag>_linux_armv7.tar.gz` | 32 位 ARM SBC、老式 ARM 服务器 |
 | `linux/armv6` | `ext_<tag>_linux_armv6.tar.gz` | 树莓派 1 与 Zero |
 | `linux/386` | `ext_<tag>_linux_386.tar.gz` | 32 位 x86 |
+| `linux/riscv64` | `ext_<tag>_linux_riscv64.tar.gz` | RISC-V 开发板与服务器 |
+| `linux/loong64` | `ext_<tag>_linux_loong64.tar.gz` | 龙芯 3A5000/3A6000 |
 
 `SHA256SUMS` 覆盖该 Release 的全部产物。
 

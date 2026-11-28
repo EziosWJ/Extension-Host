@@ -37,6 +37,8 @@ Prebuilt static binaries (SQLite included, no glibc dependency) are attached to 
 | `linux/armv7` | `ext_<tag>_linux_armv7.tar.gz` | 32-bit ARM SBCs and older ARM servers |
 | `linux/armv6` | `ext_<tag>_linux_armv6.tar.gz` | Raspberry Pi 1 and Zero |
 | `linux/386` | `ext_<tag>_linux_386.tar.gz` | 32-bit x86 |
+| `linux/riscv64` | `ext_<tag>_linux_riscv64.tar.gz` | RISC-V SBCs and servers |
+| `linux/loong64` | `ext_<tag>_linux_loong64.tar.gz` | Loongson 3A5000/3A6000 |
 
 `SHA256SUMS` covers every asset in the release.
 
